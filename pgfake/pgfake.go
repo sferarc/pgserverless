@@ -1,0 +1,620 @@
+package pgfake
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"io"
+	"math/big"
+	"net"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// PG is an in-process PostgreSQL backend sufficient to satisfy a real
+// jackc/pgx client connecting through the serverless /sql handler. It speaks
+// the parts of the wire protocol pgx exercises in QueryExecModeCacheStatement
+// (the handler's default): SSL negotiation, startup/auth, the extended query
+// protocol (Parse/Bind/Describe/Execute/Sync), and SendBatch pipelines.
+//
+// Rows are stored as native Go values and encoded on the wire honoring the
+// result format codes pgx requests in Bind (binary for registered OIDs, text
+// otherwise) using pgx's own pgtype.Map. This faithfully mirrors how the real
+// upstream PostgreSQL responds, so pgx decodes values back to the same native
+// types the production handler relies on (RowsToResult uses Rows.Values()).
+//
+// Responses are programmable per-SQL via a responder map so conformance tests
+// can assert how the handler shapes results into the Neon JSON contract.
+type PG struct {
+	t         testing.TB
+	ln        net.Listener
+	tlsCfg    *tls.Config
+	typeMap   *pgtype.Map
+	mu        sync.Mutex
+	respond   map[string]Result // keyed by exact SQL string
+	lastBegin string            // most recent BEGIN statement observed (for assertions)
+
+	// lastStartup records the parameters of the most recent StartupMessage
+	// (user, database, application_name, ...) for audit-source assertions.
+	lastStartup map[string]string
+	// lastSimpleSQL records the most recent simple-protocol Query payload, ""
+	// when the connection only used the extended protocol. Lets tests assert
+	// which protocol a handler selected.
+	lastSimpleSQL string
+
+	// rejectAuth, when set, is returned instead of AuthenticationOk. It exists
+	// so a test can exercise the path a wrong credential takes, which is the
+	// only one a host's brute-force accounting is fed from.
+	rejectAuth *pgproto3.ErrorResponse
+}
+
+// Result is the canned response for one query.
+type Result struct {
+	Cols    []Col
+	Rows    [][]any // each row is a slice of native Go column values (nil = NULL)
+	Tag     string  // CommandComplete Tag, e.g. "SELECT 1"
+	PgError *pgproto3.ErrorResponse
+	// IsWrite marks a statement that mutates data. A real PostgreSQL READ ONLY
+	// transaction rejects such statements with SQLSTATE 25006; the fake backend
+	// mirrors that so the batch read-only conformance test exercises real
+	// server-side enforcement rather than a client-side guess.
+	IsWrite bool
+}
+
+// Col describes one result column.
+type Col struct {
+	Name    string
+	TypeOID uint32
+}
+
+// New starts a fake backend on a random localhost port and returns it.
+func New(t testing.TB) *PG {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("pgfake: %v", err)
+	}
+
+	f := &PG{
+		t:       t,
+		ln:      ln,
+		tlsCfg:  selfSignedTLS(t),
+		typeMap: pgtype.NewMap(),
+		respond: make(map[string]Result),
+	}
+	go f.serve()
+	t.Cleanup(func() { _ = ln.Close() })
+	return f
+}
+
+// NewRejectingAuth starts a fake backend that completes TLS, reads the startup
+// message and then fails the connection with the given SQLSTATE instead of
+// authenticating.
+//
+// A dial to a closed port fails too, but with a net error, and a host that
+// classifies dial failures only counts the ones PostgreSQL attributes to the
+// credential (class 28). So a test about that classification needs a backend
+// that gets far enough to answer with one.
+func NewRejectingAuth(t testing.TB, code, message string) *PG {
+	f := New(t)
+	f.mu.Lock()
+	f.rejectAuth = &pgproto3.ErrorResponse{Severity: "FATAL", Code: code, Message: message}
+	f.mu.Unlock()
+	return f
+}
+
+// addr returns the host:port the fake backend listens on.
+func (f *PG) Addr() string { return f.ln.Addr().String() }
+
+// setResult registers a canned result for an exact SQL string.
+func (f *PG) SetResult(sql string, r Result) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.respond[sql] = r
+}
+
+func (f *PG) resultFor(sql string) (Result, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.respond[sql]
+	return r, ok
+}
+
+// setLastBegin records the most recent BEGIN statement for test assertions.
+func (f *PG) setLastBegin(sql string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastBegin = sql
+}
+
+// LastBegin returns the most recent BEGIN statement the backend observed.
+func (f *PG) LastBegin() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastBegin
+}
+
+// StartupParam returns a parameter from the most recent StartupMessage.
+func (f *PG) StartupParam(Name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastStartup[Name]
+}
+
+// LastSimpleSQL returns the most recent simple-protocol Query payload.
+func (f *PG) LastSimpleSQL() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSimpleSQL
+}
+
+func (f *PG) serve() {
+	for {
+		conn, err := f.ln.Accept()
+		if err != nil {
+			return
+		}
+		go f.handle(conn)
+	}
+}
+
+// session holds per-connection extended-protocol state. PostgreSQL tracks
+// prepared statements by Name and portals (bound statements) separately; pgx
+// in cache mode uses named statements and the unnamed portal. We model both so
+// pipelined batches (SendBatch) resolve each Execute to the right SQL.
+type session struct {
+	statements    map[string]string // prepared statement Name -> SQL
+	portalSQL     string            // SQL bound to the current (unnamed) portal
+	resultFormats []int16           // result format codes from the current Bind
+
+	// Transaction state, used to model READ ONLY enforcement.
+	inTxn    bool // a BEGIN has opened a transaction not yet committed
+	readOnly bool // the open transaction is READ ONLY
+	aborted  bool // an error occurred; skip messages until the next Sync
+}
+
+// isControlSQL reports whether sql is a transaction-control statement the fake
+// backend interprets directly (BEGIN with optional characteristics, or COMMIT).
+func isControlSQL(sql string) bool {
+	u := strings.ToUpper(strings.TrimSpace(sql))
+	return strings.HasPrefix(u, "BEGIN") || u == "COMMIT" || u == "END"
+}
+
+// splitSimpleQuery splits a simple-protocol query string into its individual
+// statements on ';'. Test fixtures never embed semicolons in string literals,
+// so a plain split (dropping blank trailing fragments) faithfully models how
+// PostgreSQL executes a multi-statement simple query.
+func splitSimpleQuery(q string) []string {
+	parts := strings.Split(q, ";")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (f *PG) handle(conn net.Conn) {
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+
+	// SSL negotiation: pgx sends SSLRequest first. We accept and upgrade.
+	tlsConn, err := f.negotiateSSL(conn)
+	if err != nil {
+		return
+	}
+	conn = tlsConn
+
+	be := pgproto3.NewBackend(conn, conn)
+
+	// Read startup message (post-TLS).
+	startup, err := be.ReceiveStartupMessage()
+	if err != nil {
+		return
+	}
+	sm, ok := startup.(*pgproto3.StartupMessage)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	f.lastStartup = sm.Parameters
+	f.mu.Unlock()
+
+	f.mu.Lock()
+	reject := f.rejectAuth
+	f.mu.Unlock()
+	if reject != nil {
+		be.Send(reject)
+		_ = be.Flush()
+		return
+	}
+
+	// Auth: trust everyone.
+	be.Send(&pgproto3.AuthenticationOk{})
+	be.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: "16.0 (pgbeam-fake)"})
+	be.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
+	// pgx requires standard_conforming_strings=on before it will run simple-
+	// protocol queries with arguments (the raw-text output path uses simple
+	// protocol). A real PostgreSQL/PgBeam proxy always reports this.
+	be.Send(&pgproto3.ParameterStatus{Name: "standard_conforming_strings", Value: "on"})
+	be.Send(&pgproto3.BackendKeyData{ProcessID: 1, SecretKey: []byte{0, 0, 0, 1}})
+	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+	if err := be.Flush(); err != nil {
+		return
+	}
+
+	s := &session{statements: map[string]string{}}
+
+	for {
+		msg, err := be.Receive()
+		if err != nil {
+			return
+		}
+
+		// After an error in an extended-protocol pipeline, PostgreSQL ignores
+		// all messages until the next Sync. We model that so a read-only
+		// rejection mid-batch aborts the rest of the transaction.
+		if s.aborted {
+			if _, ok := msg.(*pgproto3.Sync); ok {
+				s.aborted = false
+				s.resetTxn()
+				be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+				_ = be.Flush()
+			} else if _, ok := msg.(*pgproto3.Terminate); ok {
+				return
+			}
+			continue
+		}
+
+		switch m := msg.(type) {
+		case *pgproto3.Query:
+			f.mu.Lock()
+			f.lastSimpleSQL = m.String
+			f.mu.Unlock()
+			// Simple query protocol: always text format. A single Query may
+			// carry multiple statements separated by ';' (pgx uses this for
+			// SendBatch in simple-protocol mode, which the raw-text path
+			// selects). Each statement produces its own result set; a single
+			// ReadyForQuery terminates the whole simple-query message. On the
+			// first error PostgreSQL stops executing the remaining statements.
+			for _, stmt := range splitSimpleQuery(m.String) {
+				f.writeResult(be, s, stmt, true, nil)
+				if s.aborted {
+					break
+				}
+			}
+			status := s.txStatus()
+			s.aborted = false // simple-query errors are resolved at ReadyForQuery
+			be.Send(&pgproto3.ReadyForQuery{TxStatus: status})
+			_ = be.Flush()
+
+		case *pgproto3.Parse:
+			s.statements[m.Name] = m.Query
+			be.Send(&pgproto3.ParseComplete{})
+
+		case *pgproto3.Bind:
+			s.portalSQL = s.statements[m.PreparedStatement]
+			s.resultFormats = m.ResultFormatCodes
+			be.Send(&pgproto3.BindComplete{})
+
+		case *pgproto3.Describe:
+			// 'S' describes a prepared statement (by Name); 'P' the open portal.
+			sql := s.portalSQL
+			if m.ObjectType == 'S' {
+				sql = s.statements[m.Name]
+				// Parameter description first. We must report the correct
+				// parameter count (pgx validates arg count against it); OID 0
+				// (unknown) lets pgx infer each type from the bound value.
+				be.Send(&pgproto3.ParameterDescription{
+					ParameterOIDs: make([]uint32, countParams(sql)),
+				})
+			}
+			// Transaction-control statements return no Rows.
+			if isControlSQL(sql) {
+				be.Send(&pgproto3.NoData{})
+				break
+			}
+			res, ok := f.resultFor(sql)
+			if ok && res.PgError == nil && len(res.Cols) > 0 {
+				be.Send(rowDescription(res.Cols))
+			} else {
+				be.Send(&pgproto3.NoData{})
+			}
+
+		case *pgproto3.Execute:
+			f.writeResult(be, s, s.portalSQL, false, s.resultFormats)
+
+		case *pgproto3.Sync:
+			be.Send(&pgproto3.ReadyForQuery{TxStatus: s.txStatus()})
+			_ = be.Flush()
+
+		case *pgproto3.Terminate:
+			return
+
+		default:
+			_ = be.Flush()
+		}
+	}
+}
+
+// resetTxn clears any open-transaction state.
+func (s *session) resetTxn() {
+	s.inTxn = false
+	s.readOnly = false
+}
+
+// txStatus is the ReadyForQuery transaction-status byte: 'I' idle, 'T' in a
+// transaction block, 'E' failed transaction block.
+func (s *session) txStatus() byte {
+	switch {
+	case s.aborted:
+		return 'E'
+	case s.inTxn:
+		return 'T'
+	default:
+		return 'I'
+	}
+}
+
+// writeResult emits the canned DataRows + CommandComplete (or ErrorResponse)
+// for the given SQL. When sendRowDesc is true (simple protocol) it also emits
+// the RowDescription first. resultFormats are the per-column format codes from
+// the Bind message (nil => all text). The session carries transaction state so
+// BEGIN/COMMIT and READ ONLY enforcement behave like a real backend.
+func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDesc bool, resultFormats []int16) {
+	// Transaction control: interpret BEGIN (with characteristics) and COMMIT
+	// directly rather than from the responder map.
+	if isControlSQL(sql) {
+		u := strings.ToUpper(strings.TrimSpace(sql))
+		switch {
+		case strings.HasPrefix(u, "BEGIN"):
+			s.inTxn = true
+			s.readOnly = strings.Contains(u, "READ ONLY")
+			f.setLastBegin(sql)
+			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
+		default: // COMMIT / END
+			s.resetTxn()
+			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("COMMIT")})
+		}
+		return
+	}
+
+	res, ok := f.resultFor(sql)
+	if !ok {
+		s.aborted = true
+		be.Send(&pgproto3.ErrorResponse{
+			Severity: "ERROR",
+			Code:     "42P01",
+			Message:  "relation does not exist (no fake result registered)",
+		})
+		return
+	}
+
+	// READ ONLY enforcement: a write inside a read-only transaction is rejected
+	// with SQLSTATE 25006, exactly as PostgreSQL would.
+	if s.inTxn && s.readOnly && res.IsWrite {
+		s.aborted = true
+		be.Send(&pgproto3.ErrorResponse{
+			Severity: "ERROR",
+			Code:     "25006",
+			Message:  "cannot execute " + writeVerb(sql) + " in a read-only transaction",
+		})
+		return
+	}
+
+	if res.PgError != nil {
+		s.aborted = true
+		be.Send(res.PgError)
+		return
+	}
+	if sendRowDesc && len(res.Cols) > 0 {
+		be.Send(rowDescription(res.Cols))
+	}
+	for _, row := range res.Rows {
+		be.Send(f.encodeRow(res.Cols, row, resultFormats))
+	}
+	Tag := res.Tag
+	if Tag == "" {
+		Tag = "SELECT " + itoa(len(res.Rows))
+	}
+	be.Send(&pgproto3.CommandComplete{CommandTag: []byte(Tag)})
+}
+
+// writeVerb extracts the leading SQL verb (INSERT/UPDATE/DELETE/...) for the
+// read-only rejection message, mirroring PostgreSQL's wording.
+func writeVerb(sql string) string {
+	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(sql)))
+	if len(fields) == 0 {
+		return "statement"
+	}
+	return fields[0]
+}
+
+// formatForCol returns the wire format code (0 text, 1 binary) for column i.
+func formatForCol(resultFormats []int16, i int) int16 {
+	switch len(resultFormats) {
+	case 0:
+		return 0 // text
+	case 1:
+		return resultFormats[0] // single code applies to all columns
+	default:
+		if i < len(resultFormats) {
+			return resultFormats[i]
+		}
+		return 0
+	}
+}
+
+// RawColumn is a column value already in PostgreSQL's wire encoding, written to
+// the DataRow verbatim. It exists for the types pgx can decode but not encode
+// (record, whose codec is decode-only), where a test has to state the server's
+// bytes itself.
+type RawColumn []byte
+
+// encodeRow encodes a native-value row into a DataRow honoring per-column
+// format codes, using pgx's own type map (so pgx decodes it back natively).
+func (f *PG) encodeRow(Cols []Col, row []any, resultFormats []int16) *pgproto3.DataRow {
+	values := make([][]byte, len(Cols))
+	for i, col := range Cols {
+		v := row[i]
+		if v == nil {
+			values[i] = nil // SQL NULL
+			continue
+		}
+		if b, ok := v.(RawColumn); ok {
+			values[i] = b
+			continue
+		}
+		format := formatForCol(resultFormats, i)
+		encoded, err := f.typeMap.Encode(col.TypeOID, format, v, nil)
+		if err != nil {
+			// Fall back to a text rendering pgx can still parse for simple cases.
+			encoded = []byte(itoaAny(v))
+		}
+		values[i] = encoded
+	}
+	return &pgproto3.DataRow{Values: values}
+}
+
+// rowDescription builds a RowDescription whose format codes match how values
+// will be encoded. pgx ignores the format in RowDescription for extended-query
+// results (it uses the Bind result formats), but we set text=0 which is correct
+// for the simple-protocol path.
+func rowDescription(Cols []Col) *pgproto3.RowDescription {
+	fields := make([]pgproto3.FieldDescription, len(Cols))
+	for i, c := range Cols {
+		fields[i] = pgproto3.FieldDescription{
+			Name:                 []byte(c.Name),
+			TableOID:             0,
+			TableAttributeNumber: 0,
+			DataTypeOID:          c.TypeOID,
+			DataTypeSize:         -1,
+			TypeModifier:         -1,
+			Format:               0,
+		}
+	}
+	return &pgproto3.RowDescription{Fields: fields}
+}
+
+// negotiateSSL handles the pgx SSLRequest and upgrades the connection to TLS.
+func (f *PG) negotiateSSL(conn net.Conn) (net.Conn, error) {
+	// SSLRequest is 8 bytes: int32 length (8) + int32 code (80877103).
+	buf := make([]byte, 8)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return nil, err
+	}
+	code := int32(buf[4])<<24 | int32(buf[5])<<16 | int32(buf[6])<<8 | int32(buf[7])
+	const sslRequestCode = 80877103
+	if code != sslRequestCode {
+		return nil, errors.New("expected SSLRequest")
+	}
+	// Accept SSL.
+	if _, err := conn.Write([]byte{'S'}); err != nil {
+		return nil, err
+	}
+	tlsConn := tls.Server(conn, f.tlsCfg)
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, err
+	}
+	return tlsConn, nil
+}
+
+// selfSignedTLS produces a throwaway TLS config for the fake backend.
+func selfSignedTLS(t testing.TB) *tls.Config {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("pgfake: %v", err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "pgbeam-fake"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("pgfake: %v", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("pgfake: %v", err)
+	}
+
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+}
+
+// itoa is a tiny helper to avoid importing strconv just for command tags.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b strings.Builder
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var digits [20]byte
+	i := len(digits)
+	for n > 0 {
+		i--
+		digits[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		b.WriteByte('-')
+	}
+	b.Write(digits[i:])
+	return b.String()
+}
+
+// countParams returns the number of distinct $N placeholders in sql (the max
+// N), which is what PostgreSQL reports in ParameterDescription. It is a small
+// scanner sufficient for test fixtures (placeholders outside string literals).
+func countParams(sql string) int {
+	maxN := 0
+	for i := 0; i < len(sql); i++ {
+		if sql[i] != '$' {
+			continue
+		}
+		j := i + 1
+		n := 0
+		for j < len(sql) && sql[j] >= '0' && sql[j] <= '9' {
+			n = n*10 + int(sql[j]-'0')
+			j++
+		}
+		if j > i+1 && n > maxN {
+			maxN = n
+		}
+		i = j - 1
+	}
+	return maxN
+}
+
+// itoaAny renders a value as text for the rare encode-fallback path.
+func itoaAny(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case int:
+		return itoa(t)
+	default:
+		return ""
+	}
+}

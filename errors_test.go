@@ -1,0 +1,197 @@
+package pgserverless
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/labstack/echo/v4"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestParseConnectionString(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    *ConnInfo
+		wantErr error
+	}{
+		{
+			name:  "valid postgres://",
+			input: "postgres://user:pass@abc.proxy.pgbeam.app:5432/mydb",
+			want: &ConnInfo{
+				Host:     "abc.proxy.pgbeam.app",
+				Port:     "5432",
+				User:     "user",
+				Password: "pass",
+				Database: "mydb",
+			},
+		},
+		{
+			name:  "valid postgresql://",
+			input: "postgresql://user:pass@host.example.com/db",
+			want: &ConnInfo{
+				Host:     "host.example.com",
+				Port:     "5432",
+				User:     "user",
+				Password: "pass",
+				Database: "db",
+			},
+		},
+		{
+			name:  "default database from user",
+			input: "postgres://myuser:pass@host.example.com",
+			want: &ConnInfo{
+				Host:     "host.example.com",
+				Port:     "5432",
+				User:     "myuser",
+				Password: "pass",
+				Database: "myuser",
+			},
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: ErrMissingConnectionString,
+		},
+		{
+			name:    "invalid scheme",
+			input:   "mysql://user:pass@host/db",
+			wantErr: ErrInvalidConnectionString,
+		},
+		{
+			name:    "missing host",
+			input:   "postgres://user:pass@/db",
+			wantErr: ErrInvalidConnectionString,
+		},
+		{
+			name:    "missing user",
+			input:   "postgres://:pass@host/db",
+			wantErr: ErrInvalidConnectionString,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseConnectionString(tt.input)
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tt.wantErr), "expected %v, got %v", tt.wantErr, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestClassifyPgErrorStatus(t *testing.T) {
+	tests := []struct {
+		code   string
+		status int
+	}{
+		{"28P01", 401},
+		{"42601", 400},
+		{"22P02", 400},
+		{"23505", 400},
+		{"53300", 503},
+		{"57014", 503},
+		{"08006", 504},
+		{"XX000", 400},
+	}
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			assert.Equal(t, tt.status, classifyPgErrorStatus(tt.code))
+		})
+	}
+}
+
+func TestSanitizeError(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"connection refused", "connection refused"},
+		{"postgresql://user:pass@host/db", "upstream connection failed"},
+		{"postgres://user:pass@host/db", "upstream connection failed"},
+		{"safe message", "safe message"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, SanitizeError(tt.input))
+		})
+	}
+}
+
+func TestClassifyError(t *testing.T) {
+	tests := []struct {
+		err    error
+		status int
+	}{
+		{errors.New("connection refused"), 504},
+		{errors.New("no such host"), 504},
+		{errors.New("context deadline exceeded"), 504},
+		{errors.New("timeout occurred"), 504},
+		{errors.New("password authentication failed"), 401},
+		{ErrResponseTooLarge, 507},
+		{errors.New("something unknown"), 500},
+	}
+	for _, tt := range tests {
+		t.Run(tt.err.Error(), func(t *testing.T) {
+			status, _ := classifyError(tt.err)
+			assert.Equal(t, tt.status, status)
+		})
+	}
+}
+
+// TestErrorResponseUsesTheClientsFieldSpellings pins the wire keys against the
+// names the driver actually reads.
+//
+// This is asserted on the raw JSON on purpose. The conformance test for a full
+// PostgreSQL error unmarshals the body back into ErrorResponse, which is the
+// same struct that produced it, so it round-trips under any spelling and would
+// stay green through a rename in either direction. These five are exactly the
+// ones that were wrong before (`schemaName`, `tableName`, `columnName`,
+// `dataTypeName`, `constraintName`), which a client silently drops, leaving a
+// caller with an error object full of undefined.
+func TestErrorResponseUsesTheClientsFieldSpellings(t *testing.T) {
+	e := echo.New()
+	rec := httptest.NewRecorder()
+	c := e.NewContext(httptest.NewRequest(http.MethodPost, "/sql", nil), rec)
+
+	require.NoError(t, HandlePgError(c, &pgconn.PgError{
+		Severity: "ERROR", Code: "23505", Message: "duplicate key value violates unique constraint",
+		Detail: "Key (id)=(1) already exists.", Hint: "use upsert", Where: "PL/pgSQL function f",
+		SchemaName: "public", TableName: "users", ColumnName: "id",
+		DataTypeName: "int4", ConstraintName: "users_pkey",
+		Position: 17, InternalPosition: 3, InternalQuery: "select 1",
+		File: "nbtinsert.c", Line: 673, Routine: "_bt_check_unique",
+	}))
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+
+	for key, want := range map[string]any{
+		"schema": "public", "table": "users", "column": "id",
+		"dataType": "int4", "constraint": "users_pkey",
+		"code": "23505", "severity": "ERROR",
+		"detail": "Key (id)=(1) already exists.", "hint": "use upsert",
+		"where": "PL/pgSQL function f", "internalQuery": "select 1",
+		"file": "nbtinsert.c", "routine": "_bt_check_unique",
+		// Numeric PostgreSQL fields are decimal strings: the driver copies them
+		// onto its error object verbatim and node-postgres reports them as text.
+		"position": "17", "internalPosition": "3", "line": "673",
+	} {
+		assert.Equal(t, want, raw[key], "field %q", key)
+	}
+
+	// The PostgreSQL-side spellings must not appear at all. A struct carrying
+	// both would satisfy the assertions above while still sending the dead ones.
+	for _, dead := range []string{"schemaName", "tableName", "columnName", "dataTypeName", "constraintName"} {
+		assert.NotContains(t, raw, dead,
+			"%q is a PostgreSQL field name the client does not read; it must not be on the wire", dead)
+	}
+}
