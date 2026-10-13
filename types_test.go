@@ -53,7 +53,25 @@ func TestParsePgArray(t *testing.T) {
 		{"null element", "{1,NULL,3}", oidInt4, []any{1, nil, 3}, false},
 		{"quoted NULL string", `{"NULL","hello"}`, 25, []any{"NULL", "hello"}, false},
 		{"bool array", "{t,f,t}", oidBool, []any{true, false, true}, false},
+		{"two dimensions", "{{1,2},{3,4}}", oidInt4, []any{[]any{1, 2}, []any{3, 4}}, false},
+		{"three dimensions", "{{{1},{2}},{{3},{4}}}", oidInt4, []any{
+			[]any{[]any{1}, []any{2}},
+			[]any{[]any{3}, []any{4}},
+		}, false},
+		{"nested null elements", "{{1,NULL},{NULL,4}}", oidInt4, []any{[]any{1, nil}, []any{nil, 4}}, false},
+		{"nested empty text elements", `{{"",a},{b,""}}`, 25, []any{[]any{"", "a"}, []any{"b", ""}}, false},
+		{"quoted commas and braces", `{"a,b","{c}","d}"}`, 25, []any{"a,b", "{c}", "d}"}, false},
+		{"quoted commas inside a nested array", `{{"$1,000.00",$2.00},{$3.00,"$4,000.00"}}`, oidMoney, []any{
+			[]any{"$1,000.00", "$2.00"},
+			[]any{"$3.00", "$4,000.00"},
+		}, false},
+		{"escaped quote and backslash", `{"a\"b","c\\d"}`, 25, []any{`a"b`, `c\d`}, false},
+		{"dimension decoration is skipped", "[0:1]={1,2}", oidInt4, []any{1, 2}, false},
 		{"invalid", "not an array", 25, nil, true},
+		{"unbalanced braces", "{{1,2},{3,4}", oidInt4, nil, true},
+		{"trailing text", "{1,2}x", oidInt4, nil, true},
+		{"unterminated quote", `{"a}`, 25, nil, true},
+		{"bare brace inside an element", "{a{b}", 25, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -151,6 +169,18 @@ func TestCoerceNeonValue(t *testing.T) {
 			`{"$92,233,720,368,547,758.07"}`,
 			oidMoneyArray,
 			[]any{"$92,233,720,368,547,758.07"},
+		},
+		{
+			"money array keeps its dimensions",
+			"{{$1.23,$2.34},{$3.45,$4.56}}",
+			oidMoneyArray,
+			[]any{[]any{"$1.23", "$2.34"}, []any{"$3.45", "$4.56"}},
+		},
+		{
+			"macaddr8 array splits",
+			"{08:00:2b:01:02:03:04:05,NULL}",
+			oidMacaddr8Array,
+			[]any{"08:00:2b:01:02:03:04:05", nil},
 		},
 
 		// pgx decodes bytea and xml to []byte, which encoding/json base64-encodes,

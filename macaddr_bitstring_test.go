@@ -78,10 +78,9 @@ func TestConformance_MacaddrAndBitStringsAsText(t *testing.T) {
 
 // The array forms. pgx decodes each of these to a []any of the same Go values
 // the scalar columns produce, so an uncoerced macaddr[] came back as a list of
-// base64 strings and a bit[] as a list of pgtype structs. macaddr8[] is
-// deliberately absent: pgx registers no codec for OID 775, so it arrives as one
-// raw array literal carrying PostgreSQL's own text, which is a shape difference
-// rather than a mangled value. It is recorded in the compat matrix.
+// base64 strings and a bit[] as a list of pgtype structs. macaddr8[] is absent:
+// pgx registers no codec for OID 775, so it arrives as one array literal and is
+// covered by TestConformance_Macaddr8ArrayAsStrings.
 func TestConformance_MacaddrAndBitStringArrays(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

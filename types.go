@@ -57,16 +57,16 @@ const (
 
 	// The MAC address and bit string types. pgx decodes macaddr and macaddr8 to
 	// net.HardwareAddr, which is a []byte, and bit and varbit to pgtype.Bits,
-	// which holds one. Both marshal the bytes as base64. macaddr8[] is not here:
-	// pgx registers no codec for OID 775, so it arrives as PostgreSQL text
-	// already. See brain/architecture/neon-compat-matrix.md.
-	oidMacaddr      uint32 = 829
-	oidMacaddr8     uint32 = 774
-	oidMacaddrArray uint32 = 1040
-	oidBit          uint32 = 1560
-	oidBitArray     uint32 = 1561
-	oidVarbit       uint32 = 1562
-	oidVarbitArray  uint32 = 1563
+	// which holds one. Both marshal the bytes as base64. macaddr8[] has no pgx
+	// codec, so it arrives as an array literal; see textArrayElems.
+	oidMacaddr       uint32 = 829
+	oidMacaddr8      uint32 = 774
+	oidMacaddr8Array uint32 = 775
+	oidMacaddrArray  uint32 = 1040
+	oidBit           uint32 = 1560
+	oidBitArray      uint32 = 1561
+	oidVarbit        uint32 = 1562
+	oidVarbitArray   uint32 = 1563
 
 	// The timestamp types, which are here only for their infinite values. See
 	// infinityText: a finite timestamp is left as pgx decoded it.
@@ -175,7 +175,11 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 			return s
 		}
 	case oidMoneyArray:
-		if elems, ok := moneyArrayStrings(v); ok {
+		if elems, ok := textArrayElems(v, oidMoney); ok {
+			return elems
+		}
+	case oidMacaddr8Array:
+		if elems, ok := textArrayElems(v, oidMacaddr8); ok {
 			return elems
 		}
 	case oidInet:
@@ -460,10 +464,8 @@ func rangeArrayElemOID(m *pgtype.Map, arrayOID uint32) (uint32, bool) {
 // element's own OID. It reports false for every other array type, whose
 // elements pgx already decodes into the shape the driver returns. money[] is
 // deliberately absent: pgx hands it back as one string rather than a slice, so
-// it is handled by moneyArrayStrings instead. macaddr8[] is absent for a milder
-// version of the same reason: pgx registers no codec for OID 775, so it arrives
-// as one array literal already carrying PostgreSQL's text, which is an awkward
-// shape rather than a mangled value.
+// it is handled by textArrayElems instead. macaddr8[] is absent for the same
+// reason: pgx registers no codec for OID 775 either.
 //
 // The float arrays are here for the marshal-failure reason rather than the shape
 // reason: a single NaN or infinity anywhere in a float4[]/float8[] would fail the
@@ -570,9 +572,8 @@ const pgMaxArrayDims = 6
 // fields. So the column's registered codec decides, and only a pgtype.ArrayCodec
 // is reshaped. Everything else is returned untouched: scalars, records,
 // one-dimensional arrays (already correct), the empty array, and the text-format
-// arrays pgx has no codec for (money[], handled by moneyArrayStrings and left
-// flat: PostgreSQL's own array literal keeps its braces, so no dimension is lost
-// on the wire, and splitting them is a separate change).
+// arrays pgx has no codec for (money[] and macaddr8[], which textArrayElems
+// already nests from the literal's own braces).
 //
 // The element OID the codec declares is checked against the one in the header as
 // a second, independent agreement that these bytes are this column's array. When
@@ -759,19 +760,20 @@ func uuidString(v any) (string, bool) {
 	return s, ok
 }
 
-// moneyArrayStrings splits a money[] column into its elements. pgx registers no
-// codec for OID 791, so the column arrives as the raw array literal string
-// ("{$1.23,$2.34}") rather than as a slice, and the whole array would otherwise
-// serialize as one JSON string. Elements keep PostgreSQL's own money text,
-// which is what the driver returns for the scalar type and which carries the
-// group separators that make splitting on commas wrong: PostgreSQL quotes such
-// an element, and parsePgArray honors the quoting.
-func moneyArrayStrings(v any) ([]any, bool) {
+// textArrayElems splits an array column pgx has no codec for (money[], OID 791,
+// and macaddr8[], OID 775) into its elements. Such a column arrives as the raw
+// array literal string ("{$1.23,$2.34}") rather than as a slice, and the whole
+// array would otherwise serialize as one JSON string. Elements keep
+// PostgreSQL's own text, which is what the driver returns for the scalar type.
+// money carries group separators that make splitting on commas wrong:
+// PostgreSQL quotes such an element, and parsePgArray honors the quoting and
+// nests a multi-dimensional literal.
+func textArrayElems(v any, elemOID uint32) ([]any, bool) {
 	s, ok := v.(string)
 	if !ok {
 		return nil, false
 	}
-	elems, err := parsePgArray([]byte(s), oidMoney)
+	elems, err := parsePgArray([]byte(s), elemOID)
 	if err != nil {
 		return nil, false
 	}
@@ -868,52 +870,102 @@ func arrayElemOID(arrOID uint32) uint32 {
 }
 
 // parsePgArray parses a PostgreSQL text-format array literal like
-// {1,2,3} or {"hello","world"} into a Go slice.
+// {1,2,3} or {"hello","world"} into a Go slice. A multi-dimensional literal
+// such as {{1,2},{3,4}} becomes nested slices, and a leading dimension
+// decoration ("[0:1]={1,2}") is skipped.
 func parsePgArray(raw []byte, elemTypeOID uint32) ([]any, error) {
 	s := string(raw)
-	if len(s) < 2 || s[0] != '{' || s[len(s)-1] != '}' {
+	if strings.HasPrefix(s, "[") {
+		if i := strings.IndexByte(s, '='); i >= 0 {
+			s = s[i+1:]
+		}
+	}
+	p := pgArrayParser{s: s, elemOID: elemTypeOID}
+	arr, err := p.parseArray()
+	if err != nil {
+		return nil, err
+	}
+	if p.pos != len(s) {
 		return nil, fmt.Errorf("invalid array literal: %q", s)
 	}
-	inner := s[1 : len(s)-1]
-	if inner == "" {
-		return []any{}, nil
-	}
+	return arr, nil
+}
 
-	var result []any
+type pgArrayParser struct {
+	s       string
+	pos     int
+	elemOID uint32
+}
+
+func (p *pgArrayParser) parseArray() ([]any, error) {
+	if p.pos >= len(p.s) || p.s[p.pos] != '{' {
+		return nil, fmt.Errorf("invalid array literal: %q", p.s)
+	}
+	p.pos++
+	result := []any{}
+	if p.pos < len(p.s) && p.s[p.pos] == '}' {
+		p.pos++
+		return result, nil
+	}
+	for {
+		if p.pos >= len(p.s) {
+			return nil, fmt.Errorf("invalid array literal: %q", p.s)
+		}
+		if p.s[p.pos] == '{' {
+			sub, err := p.parseArray()
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, sub)
+		} else {
+			elem, err := p.parseElement()
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, elem)
+		}
+		if p.pos >= len(p.s) {
+			return nil, fmt.Errorf("invalid array literal: %q", p.s)
+		}
+		switch p.s[p.pos] {
+		case ',':
+			p.pos++
+		case '}':
+			p.pos++
+			return result, nil
+		default:
+			return nil, fmt.Errorf("invalid array literal: %q", p.s)
+		}
+	}
+}
+
+// parseElement reads one element up to, not including, the delimiter or
+// closing brace that ends it.
+func (p *pgArrayParser) parseElement() (any, error) {
 	var current strings.Builder
 	inQuote := false
 	wasQuoted := false
-	escaped := false
-
-	for i := range len(inner) {
-		ch := inner[i]
-		if escaped {
-			current.WriteByte(ch)
-			escaped = false
-			continue
-		}
-		if ch == '\\' {
-			escaped = true
-			continue
-		}
-		if ch == '"' {
-			if !inQuote {
-				wasQuoted = true
+	for ; p.pos < len(p.s); p.pos++ {
+		ch := p.s[p.pos]
+		switch {
+		case ch == '\\':
+			p.pos++
+			if p.pos >= len(p.s) {
+				return nil, fmt.Errorf("invalid array literal: %q", p.s)
 			}
+			current.WriteByte(p.s[p.pos])
+		case ch == '"':
+			wasQuoted = true
 			inQuote = !inQuote
-			continue
+		case !inQuote && (ch == ',' || ch == '}'):
+			return convertArrayElem(current.String(), p.elemOID, wasQuoted), nil
+		case !inQuote && ch == '{':
+			return nil, fmt.Errorf("invalid array literal: %q", p.s)
+		default:
+			current.WriteByte(ch)
 		}
-		if ch == ',' && !inQuote {
-			result = append(result, convertArrayElem(current.String(), elemTypeOID, wasQuoted))
-			current.Reset()
-			wasQuoted = false
-			continue
-		}
-		current.WriteByte(ch)
 	}
-	result = append(result, convertArrayElem(current.String(), elemTypeOID, wasQuoted))
-
-	return result, nil
+	return nil, fmt.Errorf("invalid array literal: %q", p.s)
 }
 
 // convertArrayElem converts a single array element from PG text format.

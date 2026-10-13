@@ -183,7 +183,7 @@ func TestReshapeArrayValue(t *testing.T) {
 
 	t.Run("text format is left alone", func(t *testing.T) {
 		// money[] arrives as a text-format literal and is split by
-		// moneyArrayStrings; its braces still carry the dimensions on the wire,
+		// textArrayElems; its braces still carry the dimensions on the wire,
 		// so there is nothing here to restore and no header to read.
 		got := reshapeArrayValue(m, flat, []byte("{{1,2},{3,4}}"), oidMoneyArray, 0)
 		assert.Equal(t, flat, got)

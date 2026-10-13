@@ -600,6 +600,49 @@ func TestConformance_MoneyArrayAsStrings(t *testing.T) {
 	assert.JSONEq(t, `["$1.23","$2.34"]`, string(rows[0]["a"]))
 }
 
+// A multi-dimensional money[] keeps its shape. The literal carries its own
+// braces, so the split has to track them rather than tear "{$1.23" off as an
+// element.
+func TestConformance_MultiDimensionalMoneyArray(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT a FROM t", pgfake.Result{
+		Cols: []pgfake.Col{{Name: "a", TypeOID: oidMoneyArray}},
+		Rows: [][]any{{`{{"$1,000.00",$2.34},{NULL,$4.56}}`}},
+		Tag:  "SELECT 1",
+	})
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, `{"query":"SELECT a FROM t"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	var rows []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["rows"], &rows))
+	assert.JSONEq(t, `[["$1,000.00","$2.34"],[null,"$4.56"]]`, string(rows[0]["a"]))
+}
+
+// macaddr8[] reaches the client as an array of strings. pgx registers no codec
+// for OID 775, so like money[] the column arrives as one array literal.
+func TestConformance_Macaddr8ArrayAsStrings(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT a FROM t", pgfake.Result{
+		Cols: []pgfake.Col{{Name: "a", TypeOID: oidMacaddr8Array}},
+		Rows: [][]any{{"{08:00:2b:01:02:03:04:05,NULL,08:00:2b:01:02:03:04:06}"}},
+		Tag:  "SELECT 1",
+	})
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, `{"query":"SELECT a FROM t"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	var rows []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["rows"], &rows))
+	assert.JSONEq(t, `["08:00:2b:01:02:03:04:05",null,"08:00:2b:01:02:03:04:06"]`, string(rows[0]["a"]))
+}
+
 // Types whose pgx Go value does not JSON-marshal to PostgreSQL's own text reach
 // the client as text, not as the Go shape pgx happened to decode into. Without
 // coercion bytea and xml arrive base64-encoded, date arrives as an RFC 3339
