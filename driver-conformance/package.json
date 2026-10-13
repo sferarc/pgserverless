@@ -1,0 +1,33 @@
+{
+  "name": "pgserverless-driver-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Checks a pgserverless server against the public @neondatabase/serverless driver and common ecosystem clients",
+  "scripts": {
+    "test": "vitest run",
+    "test:go-server": "bash scripts/run-against-go-server.sh",
+    "test:http": "vitest run tests/http/",
+    "test:websocket": "vitest run tests/websocket/",
+    "test:config": "vitest run tests/config/",
+    "test:edge-cases": "vitest run tests/edge-cases/",
+    "test:integrations": "vitest run tests/integrations/",
+    "test:runtimes": "vitest run tests/runtimes/",
+    "test:performance": "vitest run tests/performance/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "1.1.0",
+    "drizzle-orm": "0.45.3",
+    "kysely": "0.29.6",
+    "kysely-neon": "3.0.0",
+    "waddler": "0.1.1",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3",
+    "@types/ws": "8.18.1",
+    "typescript": "7.0.2",
+    "vitest": "5.0.2"
+  }
+}

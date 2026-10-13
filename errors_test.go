@@ -100,6 +100,7 @@ func TestClassifyPgErrorStatus(t *testing.T) {
 		{"53300", 503},
 		{"57014", 503},
 		{"08006", 504},
+		{"08P01", 400},
 		{"XX000", 400},
 	}
 	for _, tt := range tests {
@@ -193,5 +194,14 @@ func TestErrorResponseUsesTheClientsFieldSpellings(t *testing.T) {
 	for _, dead := range []string{"schemaName", "tableName", "columnName", "dataTypeName", "constraintName"} {
 		assert.NotContains(t, raw, dead,
 			"%q is a PostgreSQL field name the client does not read; it must not be on the wire", dead)
+	}
+}
+
+func TestPgErrorResponse_ParamCountMismatch(t *testing.T) {
+	for _, msg := range []string{"expected 1 arguments, got 3", "unused argument: 1"} {
+		status, resp := PgErrorResponse(errors.New(msg))
+		assert.Equal(t, 400, status)
+		require.NotNil(t, resp.Code)
+		assert.Equal(t, "08P01", *resp.Code)
 	}
 }

@@ -3,7 +3,9 @@ package pgserverless
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -19,6 +21,8 @@ var (
 	ErrInvalidConnectionString = errors.New("invalid connection string")
 	ErrResponseTooLarge        = errors.New("response too large")
 )
+
+var paramCountMismatch = regexp.MustCompile(`^(expected \d+ arguments, got \d+|unused argument: \d+)$`)
 
 // PgErrorResponse maps a PostgreSQL or connection error to the status and body
 // the driver expects. It is pure, so a caller not using echo can still produce
@@ -75,6 +79,14 @@ func PgErrorResponse(err error) (int, ErrorResponse) {
 		return classifyPgErrorStatus(pgErr.Code), resp
 	}
 
+	// pgx rejects a parameter count that disagrees with the statement before
+	// PostgreSQL sees it, with a different message in each query mode. PostgreSQL's own answer is a protocol violation, and
+	// the driver only reads the code from a 400.
+	if paramCountMismatch.MatchString(err.Error()) {
+		code, severity := "08P01", "ERROR"
+		return http.StatusBadRequest, ErrorResponse{Message: err.Error(), Code: &code, Severity: &severity}
+	}
+
 	// Non-PG errors are classified by message pattern and sanitized, because
 	// the underlying text can carry a connection string.
 	status, msg := classifyError(err)
@@ -102,6 +114,8 @@ func classifyPgErrorStatus(code string) int {
 		return 503
 	case strings.HasPrefix(code, "57"): // operator intervention
 		return 503
+	case code == "08P01": // protocol violation, caused by the request
+		return 400
 	case strings.HasPrefix(code, "08"): // connection exception
 		return 504
 	default:

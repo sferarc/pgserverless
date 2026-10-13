@@ -434,6 +434,12 @@ func TestConformance_Validation(t *testing.T) {
 		assert.Equal(t, ErrMissingQuery.Error(), errResp.Message)
 	})
 
+	t.Run("empty batch", func(t *testing.T) {
+		rec := doSQL(e, `{"queries":[]}`, nil)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.JSONEq(t, `{"results":[]}`, rec.Body.String())
+	})
+
 	t.Run("invalid JSON body", func(t *testing.T) {
 		rec := doSQL(e, `not json`, nil)
 		assert.Equal(t, http.StatusBadRequest, rec.Code)

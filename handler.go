@@ -235,7 +235,7 @@ func (h *Handler) Query(c echo.Context) error {
 	}
 	defer conn.Close(context.Background())
 
-	if len(req.Queries) > 0 {
+	if req.Queries != nil {
 		return h.executeBatch(c, conn, queryCtx, req.Queries, arrayMode, rawText, txnOpts)
 	}
 	return h.executeSingle(c, conn, queryCtx, *req.Query, ConvertParams(req.Params), arrayMode, rawText)
@@ -250,7 +250,7 @@ func decodeSQLRequest(c echo.Context) (*SQLRequest, error) {
 		return nil, ErrInvalidRequest
 	}
 
-	isBatch := len(req.Queries) > 0
+	isBatch := req.Queries != nil
 	if !isBatch && (req.Query == nil || *req.Query == "") {
 		return nil, ErrMissingQuery
 	}
