@@ -50,6 +50,8 @@ type PG struct {
 	// when the connection only used the extended protocol. Lets tests assert
 	// which protocol a handler selected.
 	lastSimpleSQL string
+	// lastBindParams records the parameter values of the most recent Bind.
+	lastBindParams [][]byte
 
 	// rejectAuth, when set, is returned instead of AuthenticationOk. It exists
 	// so a test can exercise the path a wrong credential takes, which is the
@@ -148,6 +150,13 @@ func (f *PG) StartupParam(Name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastStartup[Name]
+}
+
+// LastBindParams returns the parameter values of the most recent Bind, nil for SQL NULL.
+func (f *PG) LastBindParams() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastBindParams
 }
 
 // LastSimpleSQL returns the most recent simple-protocol Query payload.
@@ -304,6 +313,15 @@ func (f *PG) handle(conn net.Conn) {
 
 		case *pgproto3.Bind:
 			s.portalSQL = s.statements[m.PreparedStatement]
+			params := make([][]byte, len(m.Parameters))
+			for i, p := range m.Parameters {
+				if p != nil {
+					params[i] = append([]byte{}, p...)
+				}
+			}
+			f.mu.Lock()
+			f.lastBindParams = params
+			f.mu.Unlock()
 			s.resultFormats = m.ResultFormatCodes
 			be.Send(&pgproto3.BindComplete{})
 
