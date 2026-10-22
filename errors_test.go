@@ -120,12 +120,51 @@ func TestSanitizeError(t *testing.T) {
 		{"postgresql://user:pass@host/db", "upstream connection failed"},
 		{"postgres://user:pass@host/db", "upstream connection failed"},
 		{"safe message", "safe message"},
+		{"password authentication failed for user x", "password authentication failed for user x"},
+		{"host=h user=u password=hunter2 dbname=d", "upstream connection failed"},
+		{"password=hunter2", "upstream connection failed"},
+		{"host=h PASSWORD=hunter2", "upstream connection failed"},
+		{"host=h password = hunter2", "upstream connection failed"},
+		{"host=h password='two words' dbname=d", "upstream connection failed"},
+		{`host=h password="two words"`, "upstream connection failed"},
+		{`host=h password='it\'s'`, "upstream connection failed"},
+		{"cannot parse `host=h password=xxxxx`", "upstream connection failed"},
+		{"host=h sslpassword=hunter2", "upstream connection failed"},
+		{"dial failed (password=hunter2)", "upstream connection failed"},
+		{"host=h user=u dbname=d", "host=h user=u dbname=d"},
+		{"reset password=", "upstream connection failed"},
+		{"dsn:password=hunter2", "upstream connection failed"},
+		{"[password=hunter2]", "upstream connection failed"},
+		{"{password=hunter2}", "upstream connection failed"},
+		{"the new_password=1 field", "the new_password=1 field"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			assert.Equal(t, tt.want, SanitizeError(tt.input))
 		})
 	}
+}
+
+func FuzzSanitizeError(f *testing.F) {
+	for _, seed := range []string{
+		"host=h password=hunter2",
+		"host=h password='two words'",
+		`host=h password="two words"`,
+		"postgres://u:hunter2@h/d",
+		"safe message",
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, msg string) {
+		got := SanitizeError(msg)
+		if got != msg && got != "upstream connection failed" {
+			t.Fatalf("SanitizeError(%q) = %q, want input unchanged or the generic message", msg, got)
+		}
+		if keywordPassword.MatchString(msg) && got == msg {
+			t.Fatalf("SanitizeError(%q) leaked a keyword password", msg)
+		}
+	})
 }
 
 func TestClassifyError(t *testing.T) {

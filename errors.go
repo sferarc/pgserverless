@@ -22,6 +22,8 @@ var (
 	ErrResponseTooLarge        = errors.New("response too large")
 )
 
+var keywordPassword = regexp.MustCompile(`(?i)(^|[\s,;:(\[{\x60'"])(ssl)?password\s*=`)
+
 var paramCountMismatch = regexp.MustCompile(`^(expected \d+ arguments, got \d+|unused argument: \d+)$`)
 
 // PgErrorResponse maps a PostgreSQL or connection error to the status and body
@@ -147,6 +149,9 @@ func SanitizeError(msg string) string {
 	lower := strings.ToLower(msg)
 	if strings.Contains(lower, "postgresql://") || strings.Contains(lower, "postgres://") {
 		// Strip connection string entirely
+		return "upstream connection failed"
+	}
+	if keywordPassword.MatchString(msg) {
 		return "upstream connection failed"
 	}
 	if strings.Contains(msg, "password") && strings.Contains(msg, "@") {
