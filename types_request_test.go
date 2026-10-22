@@ -299,14 +299,14 @@ func TestFieldDefinitionJSON(t *testing.T) {
 
 func TestConnInfoFields(t *testing.T) {
 	ci := ConnInfo{
-		Host:     "abc.proxy.pgbeam.app",
+		Host:     "db.example.test",
 		Port:     "5432",
 		User:     "admin",
 		Password: "secret",
 		Database: "mydb",
 	}
 
-	assert.Equal(t, "abc.proxy.pgbeam.app", ci.Host)
+	assert.Equal(t, "db.example.test", ci.Host)
 	assert.Equal(t, "5432", ci.Port)
 	assert.Equal(t, "admin", ci.User)
 	assert.Equal(t, "secret", ci.Password)

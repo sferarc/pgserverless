@@ -264,8 +264,7 @@ func inetHostText(v any) (string, bool) {
 // interval always carries a time part ("1 day 00:00:00" where PostgreSQL prints
 // "1 day"), and a tsvector lexeme containing a single quote is escaped with a
 // backslash ("'c\'d':2" where PostgreSQL doubles it, "'c”d':2"). All parse back
-// to the same value, and the differences are recorded in
-// brain/architecture/neon-compat-matrix.md.
+// to the same value.
 func pgTextValue(m *pgtype.Map, v any, typeOID uint32) (string, bool) {
 	if s, ok := v.(string); ok {
 		return s, true
@@ -729,8 +728,8 @@ func nonFiniteFloatString(v any) (string, bool) {
 // It matches on the decoded Go value rather than on the column's type OID,
 // because all three types decode an infinite value to this one type, and because
 // keying on the OID would mean coercing finite timestamps too. Those stay the
-// RFC 3339 instants this endpoint has always returned, which
-// brain/architecture/neon-compat-matrix.md records as a deliberate divergence.
+// RFC 3339 instants this endpoint has always returned, as a deliberate
+// divergence from PostgreSQL's text form.
 //
 // The spellings are PostgreSQL's own and are what raw-text mode already returns
 // for these values, so a row reads back the same either way.

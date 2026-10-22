@@ -4,8 +4,7 @@
 #
 #   UPSTREAM_URL=postgres://app:pw@127.0.0.1:5432/app?sslmode=disable pnpm test:go-server [vitest args]
 #
-# PGSERVERLESS_BIN names a prebuilt server binary; without it the server is
-# built from the monorepo checkout this script sits in.
+# PGSERVERLESS_BIN names the server binary to run, and is required.
 set -euo pipefail
 
 : "${UPSTREAM_URL:?set UPSTREAM_URL to the Postgres connection string to serve}"
@@ -15,13 +14,8 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'kill "${SERVER_PID:-}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
-BIN="${PGSERVERLESS_BIN:-}"
-if [ -z "$BIN" ]; then
-  ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
-  [ -d "$ROOT/backend/tools/pgserverless" ] || { echo "set PGSERVERLESS_BIN to a pgserverless binary" >&2; exit 1; }
-  (cd "$ROOT" && go build -o "$WORK/pgserverless" ./backend/tools/pgserverless)
-  BIN="$WORK/pgserverless"
-fi
+: "${PGSERVERLESS_BIN:?set PGSERVERLESS_BIN to a pgserverless server binary}"
+BIN="$PGSERVERLESS_BIN"
 
 DATABASE_URL="$UPSTREAM_URL" PGSERVERLESS_ADDR="127.0.0.1:$ADDR_PORT" "$BIN" 2>"$WORK/server.log" &
 SERVER_PID=$!

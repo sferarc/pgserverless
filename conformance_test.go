@@ -27,10 +27,10 @@ func mustNumericConf(s string) pgtype.Numeric {
 	return n
 }
 
-// This file is the Neon serverless-driver compatibility conformance suite
-// (gap G14). It exercises the real /sql HTTP handler end-to-end against an
-// in-process PostgreSQL backend (fakePG) and asserts that PgBeam emits the
-// exact JSON request/response contract documented by @neondatabase/serverless.
+// This file is the Neon serverless-driver compatibility conformance suite.
+// It exercises the real /sql HTTP handler end-to-end against an in-process
+// PostgreSQL backend (fakePG) and asserts that the handler emits the exact
+// JSON request/response contract documented by @neondatabase/serverless.
 //
 // Reference contract (from the driver source / docs):
 //   - Single query  -> FullQueryResults JSON object.
@@ -40,9 +40,6 @@ func mustNumericConf(s string) pgtype.Numeric {
 //   - Errors: full pg-error JSON (message, code, severity, detail, hint, ...).
 //   - Headers: Neon-Connection-String / Neon-Array-Mode / Neon-Pool-Opt-In /
 //     Neon-Raw-Text-Output normalize to their standard equivalents.
-//
-// The matrix proven here is documented in
-// brain/architecture/neon-compat-matrix.md.
 
 const (
 	conformanceHost = "db.example.test"
@@ -828,8 +825,8 @@ func TestConformance_RawTextOutput_BatchArrayMode(t *testing.T) {
 // Batch transaction options — readOnly / isolationLevel / deferrable.
 //
 // The driver sends these as Neon-Batch-Read-Only / Neon-Batch-Isolation-Level /
-// Neon-Batch-Deferrable headers on array (sql.transaction) requests. PgBeam
-// wraps the batch in an explicit BEGIN … COMMIT so PostgreSQL applies the
+// Neon-Batch-Deferrable headers on array (sql.transaction) requests. The
+// handler wraps the batch in an explicit BEGIN … COMMIT so PostgreSQL applies the
 // characteristics; READ ONLY makes the server reject writes with SQLSTATE 25006.
 // ---------------------------------------------------------------------------
 

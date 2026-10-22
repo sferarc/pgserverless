@@ -8,13 +8,14 @@ It complements the Go corpus in [`spec/pgserverless`](../../../../spec/pgserverl
 
 ## Run it against the Go server
 
-You supply the Postgres. The script builds the server from this repository, starts it in front of that database, runs the suite and stops the server:
+You supply the Postgres and a server binary. The script starts the server in front of that database, runs the suite and stops the server:
 
 ```bash
-UPSTREAM_URL='postgres://app:pw@127.0.0.1:5432/app?sslmode=disable' pnpm test:go-server
+PGSERVERLESS_BIN=./pgserverless \
+  UPSTREAM_URL='postgres://app:pw@127.0.0.1:5432/app?sslmode=disable' pnpm test:go-server
 ```
 
-Arguments pass through to vitest, for example `pnpm test:go-server tests/http`. Use `PGSERVERLESS_BIN` for a prebuilt binary (required outside the monorepo) and `SERVER_PORT` to move off 4000.
+Arguments pass through to vitest, for example `pnpm test:go-server tests/http`. `PGSERVERLESS_BIN` names the server binary to run and is required; `SERVER_PORT` moves it off 4000.
 
 ## Run it against any other server
 
@@ -50,5 +51,5 @@ Tests run in parallel against a live database. A test that creates a table names
 
 ```bash
 pnpm typecheck
-pnpm exec biome check .   # monorepo only, the lint config is not mirrored
+pnpm exec biome check .
 ```

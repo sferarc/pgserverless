@@ -250,11 +250,11 @@ func (f *PG) handle(conn net.Conn) {
 
 	// Auth: trust everyone.
 	be.Send(&pgproto3.AuthenticationOk{})
-	be.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: "16.0 (pgbeam-fake)"})
+	be.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: "16.0 (pgfake)"})
 	be.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
 	// pgx requires standard_conforming_strings=on before it will run simple-
 	// protocol queries with arguments (the raw-text output path uses simple
-	// protocol). A real PostgreSQL/PgBeam proxy always reports this.
+	// protocol). A real PostgreSQL server always reports this.
 	be.Send(&pgproto3.ParameterStatus{Name: "standard_conforming_strings", Value: "on"})
 	be.Send(&pgproto3.BackendKeyData{ProcessID: 1, SecretKey: []byte{0, 0, 0, 1}})
 	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
@@ -557,7 +557,7 @@ func selfSignedTLS(t testing.TB) *tls.Config {
 
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "pgbeam-fake"},
+		Subject:      pkix.Name{CommonName: "pgfake"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		DNSNames:     []string{"localhost"},

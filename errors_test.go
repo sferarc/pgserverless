@@ -23,9 +23,9 @@ func TestParseConnectionString(t *testing.T) {
 	}{
 		{
 			name:  "valid postgres://",
-			input: "postgres://user:pass@abc.proxy.pgbeam.app:5432/mydb",
+			input: "postgres://user:pass@db.example.test:5432/mydb",
 			want: &ConnInfo{
-				Host:     "abc.proxy.pgbeam.app",
+				Host:     "db.example.test",
 				Port:     "5432",
 				User:     "user",
 				Password: "pass",
