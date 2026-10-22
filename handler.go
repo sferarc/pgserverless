@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -191,8 +193,7 @@ func (h *Handler) Query(c echo.Context) error {
 	up, aerr := h.admit(c)
 	if aerr != nil {
 		status := http.StatusBadRequest
-		var ae *AdmissionError
-		if errors.As(aerr, &ae) {
+		if ae, ok := errors.AsType[*AdmissionError](aerr); ok {
 			status = ae.Status
 		}
 		return c.JSON(status, ErrorResponse{Message: aerr.Error()})
@@ -287,6 +288,12 @@ func NormalizeHeaders(next echo.HandlerFunc) echo.HandlerFunc {
 
 // parseHostPort splits a host:port, defaulting the port to 5432.
 func parseHostPort(addr string) (string, string) {
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		return host, port
+	}
+	if ip, err := netip.ParseAddr(strings.Trim(addr, "[]")); err == nil {
+		return ip.String(), "5432"
+	}
 	idx := strings.LastIndex(addr, ":")
 	if idx == -1 {
 		return addr, "5432"

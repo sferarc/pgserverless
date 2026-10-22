@@ -3,6 +3,7 @@ package pgserverless
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -203,5 +204,41 @@ func TestPgErrorResponse_ParamCountMismatch(t *testing.T) {
 		assert.Equal(t, 400, status)
 		require.NotNil(t, resp.Code)
 		assert.Equal(t, "08P01", *resp.Code)
+	}
+}
+
+func TestParseConnectionString_UnparsableURL(t *testing.T) {
+	_, err := ParseConnectionString("postgres://user:pass@host:notaport/db")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidConnectionString))
+}
+
+func TestPgErrorResponse_OptionalFieldsAppearOnlyWhenSent(t *testing.T) {
+	bare := &pgconn.PgError{Severity: "ERROR", Code: "XX000", Message: "boom"}
+	_, resp := PgErrorResponse(bare)
+	assert.Nil(t, resp.Detail)
+	assert.Nil(t, resp.Position)
+	assert.Nil(t, resp.Line)
+
+	full := &pgconn.PgError{
+		Severity: "ERROR", Code: "42601", Message: "syntax error", Hint: "h", Where: "w",
+		InternalQuery: "iq", File: "f.c", Routine: "r", Position: 8, InternalPosition: 3, Line: 12,
+		SchemaName: "s", TableName: "t", ColumnName: "c", DataTypeName: "d", ConstraintName: "k",
+	}
+	status, resp := PgErrorResponse(fmt.Errorf("wrapped: %w", full))
+	assert.Equal(t, http.StatusBadRequest, status, "a wrapped PgError is still recognized")
+	assert.Equal(t, "8", *resp.Position)
+	assert.Equal(t, "3", *resp.InternalPosition)
+	assert.Equal(t, "12", *resp.Line)
+	assert.Equal(t, "iq", *resp.InternalQuery)
+	assert.Equal(t, "d", *resp.DataTypeName)
+}
+
+func TestSanitizeError_SchemeCase(t *testing.T) {
+	for _, msg := range []string{
+		"dial POSTGRES://u:secret@h/db failed",
+		"cannot reach PostgreSQL://u:secret@h/db",
+	} {
+		assert.Equal(t, "upstream connection failed", SanitizeError(msg), msg)
 	}
 }

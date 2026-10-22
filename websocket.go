@@ -84,8 +84,7 @@ func (h *Handler) Upgrade(c echo.Context) error {
 	up, aerr := admit(c)
 	if aerr != nil {
 		status := http.StatusBadRequest
-		var ae *AdmissionError
-		if errors.As(aerr, &ae) {
+		if ae, ok := errors.AsType[*AdmissionError](aerr); ok {
 			status = ae.Status
 		}
 		return c.JSON(status, ErrorResponse{Message: aerr.Error()})

@@ -31,6 +31,10 @@ func TestParseHostPort(t *testing.T) {
 		{":5432", "", "5432"},
 		{"localhost:20533", "localhost", "20533"},
 		{"localhost", "localhost", "5432"},
+		{"[::1]:5432", "::1", "5432"},
+		{"[2001:db8::1]:6543", "2001:db8::1", "6543"},
+		{"::1", "::1", "5432"},
+		{"[::1]", "::1", "5432"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.addr, func(t *testing.T) {

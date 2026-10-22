@@ -28,8 +28,7 @@ var paramCountMismatch = regexp.MustCompile(`^(expected \d+ arguments, got \d+|u
 // the driver expects. It is pure, so a caller not using echo can still produce
 // the same response the handler would.
 func PgErrorResponse(err error) (int, ErrorResponse) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		resp := ErrorResponse{
 			Message:  pgErr.Message,
 			Code:     &pgErr.Code,
@@ -145,7 +144,8 @@ func classifyError(err error) (int, string) {
 
 // SanitizeError removes credentials from error messages.
 func SanitizeError(msg string) string {
-	if strings.Contains(msg, "postgresql://") || strings.Contains(msg, "postgres://") {
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "postgresql://") || strings.Contains(lower, "postgres://") {
 		// Strip connection string entirely
 		return "upstream connection failed"
 	}
