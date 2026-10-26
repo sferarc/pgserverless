@@ -977,7 +977,7 @@ func convertArrayElem(s string, elemTypeOID uint32, wasQuoted bool) any {
 }
 
 // ConvertParams converts query parameters for pgx. Slices are formatted
-// as PG array literals, maps/structs are JSON-encoded.
+// as PG array literals, floats as number text, maps/structs are JSON-encoded.
 func ConvertParams(params []any) []any {
 	if len(params) == 0 {
 		return params
@@ -987,6 +987,11 @@ func ConvertParams(params []any) []any {
 		switch v := p.(type) {
 		case []any:
 			out[i] = formatPgArray(v)
+		case float64:
+			// pgx truncates a float64 bound to an integer parameter (1.5 into int4 is 1); as text PostgreSQL rejects it with 22P02.
+			out[i] = formatPgFloat(v, 64)
+		case float32:
+			out[i] = formatPgFloat(float64(v), 32)
 		case map[string]any:
 			b, err := json.Marshal(v)
 			if err != nil {
@@ -1049,15 +1054,24 @@ func formatPgArrayElem(elem any) string {
 // but can from a Go caller, and their bare Go spellings ("+Inf") are not ones
 // PostgreSQL accepts.
 func formatPgArrayFloat(f float64) string {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return `"` + formatPgFloat(f, 64) + `"`
+	}
+	return formatPgFloat(f, 64)
+}
+
+// formatPgFloat renders f as PostgreSQL number text, spelling the non-finite values as PostgreSQL does.
+// bitSize 32 keeps a widened float32 at its shortest float32 spelling, so float32(0.1) is "0.1".
+func formatPgFloat(f float64, bitSize int) string {
 	switch {
 	case math.IsNaN(f):
-		return `"NaN"`
+		return "NaN"
 	case math.IsInf(f, 1):
-		return `"Infinity"`
+		return "Infinity"
 	case math.IsInf(f, -1):
-		return `"-Infinity"`
+		return "-Infinity"
 	}
-	return strconv.FormatFloat(f, 'f', -1, 64)
+	return strconv.FormatFloat(f, 'f', -1, bitSize)
 }
 
 // pgArrayQuoteChars are the characters that force an element to be quoted: the

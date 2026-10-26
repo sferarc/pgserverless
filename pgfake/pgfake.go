@@ -70,6 +70,8 @@ type Result struct {
 	// mirrors that so the batch read-only conformance test exercises real
 	// server-side enforcement rather than a client-side guess.
 	IsWrite bool
+	// ParamOIDs are the parameter types Describe reports; unset ones are 0 (unknown), so pgx binds text.
+	ParamOIDs []uint32
 }
 
 // Col describes one result column.
@@ -355,9 +357,11 @@ func (f *PG) handle(conn net.Conn) {
 				// Parameter description first. We must report the correct
 				// parameter count (pgx validates arg count against it); OID 0
 				// (unknown) lets pgx infer each type from the bound value.
-				be.Send(&pgproto3.ParameterDescription{
-					ParameterOIDs: make([]uint32, countParams(sql)),
-				})
+				oids := make([]uint32, countParams(sql))
+				if res, ok := f.resultFor(sql); ok {
+					copy(oids, res.ParamOIDs)
+				}
+				be.Send(&pgproto3.ParameterDescription{ParameterOIDs: oids})
 			}
 			// Transaction-control statements return no Rows.
 			if isControlSQL(sql) {

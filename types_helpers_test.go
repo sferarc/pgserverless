@@ -129,10 +129,10 @@ func TestNeonArrayElemOIDMapsEveryListedArray(t *testing.T) {
 	assert.False(t, ok, "int4[] needs no coercion")
 }
 
-func TestConvertParamsLeavesScalarsAndEmptyAlone(t *testing.T) {
+func TestConvertParamsScalarsAndEmpty(t *testing.T) {
 	assert.Nil(t, ConvertParams(nil))
 	assert.Equal(t, []any{}, ConvertParams([]any{}))
 
 	got := ConvertParams([]any{"s", 1.5, nil, true, []any{"a"}, map[string]any{"k": 1.0}})
-	assert.Equal(t, []any{"s", 1.5, nil, true, `{a}`, `{"k":1}`}, got)
+	assert.Equal(t, []any{"s", "1.5", nil, true, `{a}`, `{"k":1}`}, got)
 }

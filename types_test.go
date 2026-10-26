@@ -97,6 +97,8 @@ func TestConvertParams(t *testing.T) {
 		{"scalars", []any{1, "hello", true}, []any{1, "hello", true}},
 		{"slice to pg array", []any{[]any{1, 2, 3}}, []any{"{1,2,3}"}},
 		{"map to json", []any{map[string]any{"k": "v"}}, []any{`{"k":"v"}`}},
+		{"floats to text", []any{1.5, float64(1000000), 1e21, float32(0.5), float32(0.1)}, []any{"1.5", "1000000", "1000000000000000000000", "0.5", "0.1"}},
+		{"non-finite floats to text", []any{math.NaN(), math.Inf(1), math.Inf(-1)}, []any{"NaN", "Infinity", "-Infinity"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
