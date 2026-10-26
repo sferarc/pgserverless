@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+### Patch Changes
+
+- 32bae0f: Require `github.com/labstack/echo/v4` v4.16.1, which fixes GHSA-cxf3-9h37-7rr8, GHSA-9969-6676-49h5, GHSA-h7wr-284f-5qvc and GHSA-f48p-c9v4-h7xv. The module declared v4.15.4, which is inside the vulnerable range of all four. pgserverless itself does not use the affected `Proxy`, `Decompress` or `BodyDump` middleware, but a consumer that builds on the old floor could resolve a vulnerable echo for its own routes.
+- 2dfba67: Number parameters are bound as PostgreSQL number text instead of as Go floats. A fraction bound to an integer parameter (`1.5` into `$1::int4`) now fails with `22P02` instead of being truncated to `1`, matching the same value inside an array. A whole number past the int64 range bound to an integer parameter now fails with PostgreSQL's `22003` (value out of range).
+
 ## 0.2.0
 
 ### Minor Changes
