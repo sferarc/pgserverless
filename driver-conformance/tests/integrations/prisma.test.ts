@@ -1,548 +1,318 @@
-/**
- * Prisma Integration Tests (50 tests)
- *
- * Tests for Prisma integration with @prisma/adapter-neon
- *
- * Note: These tests require Prisma to be properly configured.
- * They use raw SQL queries via Prisma's $queryRaw to test the Neon adapter.
- */
+// Drives @prisma/adapter-neon directly: its commit() and rollback() only release the connection, so the tests send COMMIT or ROLLBACK themselves.
 
-import { neon, Pool } from "@neondatabase/serverless";
+import { PrismaNeon, PrismaNeonHttp } from "@prisma/adapter-neon";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { getDatabaseUrl } from "../../helpers/connection";
 import { uniqueTableName } from "../../helpers/fixtures";
 
-describe("Prisma Integration Tests", () => {
-  let pool: Pool;
-  let rawSql: ReturnType<typeof neon>;
-  const testTableName = uniqueTableName("prisma_test");
+type Arg = string | number | boolean | null;
+
+type Queryable = Pick<Awaited<ReturnType<PrismaNeon["connect"]>>, "queryRaw" | "executeRaw">;
+
+function toQuery(sql: string, args: Arg[]) {
+  return {
+    sql,
+    args,
+    argTypes: args.map((arg) => ({
+      scalarType:
+        typeof arg === "number"
+          ? Number.isInteger(arg)
+            ? ("int" as const)
+            : ("float" as const)
+          : typeof arg === "boolean"
+            ? ("boolean" as const)
+            : ("string" as const),
+      arity: "scalar" as const,
+    })),
+  };
+}
+
+function toTypedQuery(
+  sql: string,
+  args: { value: unknown; scalarType: "int" | "string" | "datetime" | "bytes"; arity?: "list" }[],
+) {
+  return {
+    sql,
+    args: args.map((arg) => arg.value),
+    argTypes: args.map((arg) => ({
+      scalarType: arg.scalarType,
+      arity: arg.arity ?? ("scalar" as const),
+    })),
+  };
+}
+
+async function select(db: Queryable, sql: string, args: Arg[] = []) {
+  const result = await db.queryRaw(toQuery(sql, args));
+  return result.rows.map((row) =>
+    Object.fromEntries(result.columnNames.map((name, i) => [name, row[i]])),
+  );
+}
+
+const factories = [
+  {
+    name: "WebSocket (PrismaNeon)",
+    create: () => new PrismaNeon({ connectionString: getDatabaseUrl() }),
+    mapsErrors: true,
+  },
+  {
+    name: "HTTP (PrismaNeonHttp)",
+    create: () => new PrismaNeonHttp(getDatabaseUrl(), {}),
+    mapsErrors: false,
+  },
+];
+
+describe.each(factories)("Prisma adapter over $name", ({ create, mapsErrors }) => {
+  // PrismaNeonHttp passes the driver error through instead of wrapping it
+  const failure = (kind: string, code: string) => (mapsErrors ? { cause: { kind } } : { code });
+  const table = uniqueTableName("prisma_adapter");
+  let adapter: Awaited<ReturnType<ReturnType<typeof create>["connect"]>>;
 
   beforeAll(async () => {
-    rawSql = neon(getDatabaseUrl());
-    pool = new Pool({ connectionString: getDatabaseUrl() });
-
-    // Create test table
-    await rawSql`
-      CREATE TABLE IF NOT EXISTS ${rawSql.unsafe(testTableName)} (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT UNIQUE,
-        age INTEGER,
-        active BOOLEAN DEFAULT true,
-        balance DECIMAL(10, 2),
-        metadata JSONB,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `;
+    adapter = await create().connect();
+    await adapter.executeRaw(
+      toQuery(
+        `CREATE TABLE ${table} (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT UNIQUE,
+          age INTEGER,
+          active BOOLEAN DEFAULT true,
+          balance DECIMAL(10, 2),
+          metadata JSONB,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        )`,
+        [],
+      ),
+    );
   });
 
   afterAll(async () => {
-    await rawSql`DROP TABLE IF EXISTS ${rawSql.unsafe(testTableName)}`;
-    await pool.end();
+    await adapter.executeRaw(toQuery(`DROP TABLE IF EXISTS ${table}`, []));
+    await adapter.dispose();
   });
 
-  // Note: Since we can't run actual Prisma client tests without a generated client,
-  // we simulate Prisma-like operations using the Pool (which Prisma adapter uses)
-
-  // ==================== Connection Tests ====================
-  describe("Connection Tests", () => {
-    test("@prisma/adapter-neon setup concept", async () => {
-      // The adapter uses Pool internally
-      const client = await pool.connect();
-      const result = await client.query("SELECT 1 as num");
-      expect(result.rows[0].num).toBe(1);
-      client.release();
+  describe("queryRaw and executeRaw", () => {
+    test("selects a literal", async () => {
+      expect(await select(adapter, "SELECT 1 AS num")).toEqual([{ num: 1 }]);
     });
 
-    test("basic connection via Pool", async () => {
-      const result = await pool.query("SELECT 'prisma_test' as adapter");
-      expect(result.rows[0].adapter).toBe("prisma_test");
-    });
-
-    test("connection pooling works", async () => {
-      const client1 = await pool.connect();
-      const client2 = await pool.connect();
-
-      const r1 = await client1.query("SELECT 1 as n");
-      const r2 = await client2.query("SELECT 2 as n");
-
-      expect(r1.rows[0].n).toBe(1);
-      expect(r2.rows[0].n).toBe(2);
-
-      client1.release();
-      client2.release();
-    });
-  });
-
-  // ==================== CRUD Operations (Prisma-style) ====================
-  describe("CRUD Operations", () => {
-    test("create single record", async () => {
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name, email, age) VALUES ($1, $2, $3) RETURNING *`,
-        ["prisma_user_1", "prisma1@example.com", 25],
+    test("binds typed parameters on insert and returns the row", async () => {
+      const rows = await select(
+        adapter,
+        `INSERT INTO ${table} (name, email, age, active) VALUES ($1, $2, $3, $4) RETURNING name, email, age, active`,
+        ["ada", "ada@example.com", 36, false],
       );
-      expect(result.rows.length).toBe(1);
-      expect(result.rows[0].name).toBe("prisma_user_1");
+      expect(rows).toEqual([{ name: "ada", email: "ada@example.com", age: 36, active: false }]);
     });
 
-    test("create multiple records", async () => {
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name, email, age) VALUES ($1, $2, $3), ($4, $5, $6) RETURNING *`,
-        ["prisma_multi_1", "pm1@example.com", 30, "prisma_multi_2", "pm2@example.com", 35],
+    test("executeRaw reports affected rows", async () => {
+      await adapter.executeRaw(
+        toQuery(`INSERT INTO ${table} (name, age) VALUES ($1, $2), ($3, $4)`, ["u1", 1, "u2", 1]),
       );
-      expect(result.rows.length).toBe(2);
-    });
-
-    test("findMany - select all", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName}`);
-      expect(result.rows.length).toBeGreaterThan(0);
-    });
-
-    test("findFirst - select with limit", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} LIMIT 1`);
-      expect(result.rows.length).toBe(1);
-    });
-
-    test("findUnique - select by unique field", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE email = $1`, [
-        "prisma1@example.com",
-      ]);
-      expect(result.rows.length).toBeLessThanOrEqual(1);
-    });
-
-    test("update single record", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name, email, age) VALUES ($1, $2, $3)`, [
-        "prisma_update",
-        "pupdate@example.com",
-        20,
-      ]);
-
-      const result = await pool.query(
-        `UPDATE ${testTableName} SET age = $1 WHERE email = $2 RETURNING *`,
-        [21, "pupdate@example.com"],
+      const updated = await adapter.executeRaw(
+        toQuery(`UPDATE ${table} SET age = $1 WHERE age = $2`, [2, 1]),
       );
-      expect(result.rows[0].age).toBe(21);
+      expect(updated).toBe(2);
+      const deleted = await adapter.executeRaw(toQuery(`DELETE FROM ${table} WHERE age = $1`, [2]));
+      expect(deleted).toBe(2);
     });
 
-    test("updateMany - update multiple records", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name, active) VALUES ($1, $2), ($3, $4)`, [
-        "prisma_upd_many_1",
-        false,
-        "prisma_upd_many_2",
-        false,
-      ]);
-
-      const result = await pool.query(
-        `UPDATE ${testTableName} SET active = $1 WHERE name LIKE $2 RETURNING *`,
-        [true, "prisma_upd_many%"],
-      );
-      expect(result.rows.length).toBeGreaterThanOrEqual(2);
-    });
-
-    test("delete single record", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name, email) VALUES ($1, $2)`, [
-        "prisma_delete",
-        "pdelete@example.com",
-      ]);
-
-      const result = await pool.query(`DELETE FROM ${testTableName} WHERE email = $1 RETURNING *`, [
-        "pdelete@example.com",
-      ]);
-      expect(result.rows.length).toBe(1);
-    });
-
-    test("deleteMany - delete multiple records", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name) VALUES ($1), ($2)`, [
-        "prisma_del_many_1",
-        "prisma_del_many_2",
-      ]);
-
-      const result = await pool.query(
-        `DELETE FROM ${testTableName} WHERE name LIKE $1 RETURNING *`,
-        ["prisma_del_many%"],
-      );
-      expect(result.rows.length).toBeGreaterThanOrEqual(2);
-    });
-
-    test("upsert - insert on conflict", async () => {
-      const email = "prisma_upsert@example.com";
-
-      // First insert
-      await pool.query(
-        `INSERT INTO ${testTableName} (name, email, age)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (email) DO UPDATE SET age = $3
-         RETURNING *`,
-        ["prisma_upsert", email, 25],
-      );
-
-      // Upsert - should update
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name, email, age)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (email) DO UPDATE SET age = $3
-         RETURNING *`,
-        ["prisma_upsert", email, 30],
-      );
-
-      expect(result.rows[0].age).toBe(30);
-    });
-  });
-
-  // ==================== Filtering ====================
-  describe("Filtering", () => {
-    test("where equals", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name, age) VALUES ($1, $2)`, [
-        "prisma_where_eq",
-        42,
-      ]);
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE age = $1`, [42]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-    });
-
-    test("where not equals", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE age != $1`, [999]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(0);
-    });
-
-    test("where greater than", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name, age) VALUES ($1, $2)`, [
-        "prisma_gt",
-        100,
-      ]);
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE age > $1`, [99]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-    });
-
-    test("where less than", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name, age) VALUES ($1, $2)`, [
-        "prisma_lt",
-        5,
-      ]);
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE age < $1`, [10]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-    });
-
-    test("where IN", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name) VALUES ($1), ($2)`, [
-        "prisma_in_1",
-        "prisma_in_2",
-      ]);
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name = ANY($1)`, [
-        ["prisma_in_1", "prisma_in_2"],
-      ]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(2);
-    });
-
-    test("where NOT IN", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name != ALL($1)`, [
-        ["nonexistent1", "nonexistent2"],
-      ]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(0);
-    });
-
-    test("where contains (LIKE)", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name) VALUES ($1)`, ["prisma_contains_test"]);
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name LIKE $1`, [
-        "%contains%",
-      ]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-    });
-
-    test("where startsWith", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name LIKE $1`, [
-        "prisma%",
-      ]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-    });
-
-    test("where endsWith", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name LIKE $1`, [
-        "%test",
-      ]);
-      expect(result.rows.length).toBeGreaterThanOrEqual(0);
-    });
-
-    test("where IS NULL", async () => {
-      await pool.query(`INSERT INTO ${testTableName} (name, age) VALUES ($1, $2)`, [
-        "prisma_null",
-        null,
-      ]);
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE age IS NULL`);
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  // ==================== Sorting ====================
-  describe("Sorting", () => {
-    test("orderBy ascending", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} ORDER BY id ASC LIMIT 5`);
-      if (result.rows.length > 1) {
-        expect(result.rows[0].id).toBeLessThan(result.rows[1].id);
-      }
-    });
-
-    test("orderBy descending", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} ORDER BY id DESC LIMIT 5`);
-      if (result.rows.length > 1) {
-        expect(result.rows[0].id).toBeGreaterThan(result.rows[1].id);
-      }
-    });
-
-    test("orderBy multiple fields", async () => {
-      const result = await pool.query(
-        `SELECT * FROM ${testTableName} ORDER BY active DESC, id ASC LIMIT 10`,
-      );
-      expect(result.rows.length).toBeGreaterThanOrEqual(0);
-    });
-  });
-
-  // ==================== Pagination ====================
-  describe("Pagination", () => {
-    test("take (LIMIT)", async () => {
-      const result = await pool.query(`SELECT * FROM ${testTableName} LIMIT $1`, [5]);
-      expect(result.rows.length).toBeLessThanOrEqual(5);
-    });
-
-    test("skip (OFFSET)", async () => {
-      const all = await pool.query(`SELECT * FROM ${testTableName} ORDER BY id ASC`);
-      const skipped = await pool.query(
-        `SELECT * FROM ${testTableName} ORDER BY id ASC OFFSET $1`,
-        [1],
-      );
-
-      if (all.rows.length > 1) {
-        expect(skipped.rows[0].id).toBe(all.rows[1].id);
-      }
-    });
-
-    test("cursor-based pagination", async () => {
-      const first = await pool.query(`SELECT * FROM ${testTableName} ORDER BY id ASC LIMIT 2`);
-
-      if (first.rows.length > 0) {
-        const cursor = first.rows[first.rows.length - 1].id;
-        const next = await pool.query(
-          `SELECT * FROM ${testTableName} WHERE id > $1 ORDER BY id ASC LIMIT 2`,
-          [cursor],
-        );
-        expect(next.rows.length).toBeGreaterThanOrEqual(0);
-      }
-    });
-  });
-
-  // ==================== Aggregations ====================
-  describe("Aggregations", () => {
-    test("count", async () => {
-      const result = await pool.query(`SELECT COUNT(*) as count FROM ${testTableName}`);
-      expect(Number(result.rows[0].count)).toBeGreaterThan(0);
-    });
-
-    test("sum", async () => {
-      const result = await pool.query(`SELECT SUM(age) as total FROM ${testTableName}`);
-      expect(result.rows[0].total).toBeDefined();
-    });
-
-    test("avg", async () => {
-      const result = await pool.query(`SELECT AVG(age) as average FROM ${testTableName}`);
-      expect(result.rows[0].average).toBeDefined();
-    });
-
-    test("min", async () => {
-      const result = await pool.query(`SELECT MIN(age) as min_age FROM ${testTableName}`);
-      expect(result.rows[0]).toHaveProperty("min_age");
-    });
-
-    test("max", async () => {
-      const result = await pool.query(`SELECT MAX(age) as max_age FROM ${testTableName}`);
-      expect(result.rows[0]).toHaveProperty("max_age");
-    });
-
-    test("groupBy", async () => {
-      const result = await pool.query(
-        `SELECT active, COUNT(*) as count FROM ${testTableName} GROUP BY active`,
-      );
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  // ==================== Transactions ====================
-  describe("Transactions", () => {
-    test("transaction commit", async () => {
-      const client = await pool.connect();
-      const name = uniqueTableName("txn_commit");
-
-      try {
-        await client.query("BEGIN");
-        await client.query(`INSERT INTO ${testTableName} (name) VALUES ($1)`, [name]);
-        await client.query("COMMIT");
-      } finally {
-        client.release();
-      }
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name = $1`, [name]);
-      expect(result.rows.length).toBe(1);
-    });
-
-    test("transaction rollback", async () => {
-      const client = await pool.connect();
-      const name = uniqueTableName("txn_rollback");
-
-      try {
-        await client.query("BEGIN");
-        await client.query(`INSERT INTO ${testTableName} (name) VALUES ($1)`, [name]);
-        await client.query("ROLLBACK");
-      } finally {
-        client.release();
-      }
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name = $1`, [name]);
-      expect(result.rows.length).toBe(0);
-    });
-
-    test("interactive transaction", async () => {
-      const client = await pool.connect();
-      const name = uniqueTableName("txn_interactive");
-
-      try {
-        await client.query("BEGIN");
-
-        const insert = await client.query(
-          `INSERT INTO ${testTableName} (name, age) VALUES ($1, $2) RETURNING id`,
-          [name, 10],
-        );
-
-        await client.query(`UPDATE ${testTableName} SET age = $1 WHERE id = $2`, [
+    test("filters, orders and paginates", async () => {
+      await adapter.executeRaw(
+        toQuery(`INSERT INTO ${table} (name, age) VALUES ($1, $2), ($3, $4), ($5, $6)`, [
+          "p_a",
+          10,
+          "p_b",
           20,
-          insert.rows[0].id,
-        ]);
+          "p_c",
+          30,
+        ]),
+      );
+      const page = await select(
+        adapter,
+        `SELECT name FROM ${table} WHERE name LIKE $1 ORDER BY age DESC LIMIT $2 OFFSET $3`,
+        ["p\\_%", 2, 1],
+      );
+      expect(page).toEqual([{ name: "p_b" }, { name: "p_a" }]);
+    });
 
-        await client.query("COMMIT");
-      } finally {
-        client.release();
-      }
-
-      const result = await pool.query(`SELECT * FROM ${testTableName} WHERE name = $1`, [name]);
-      expect(result.rows[0].age).toBe(20);
+    test("aggregates", async () => {
+      const [row] = await select(
+        adapter,
+        `SELECT COUNT(*)::int AS n, MIN(age) AS lo, MAX(age) AS hi FROM ${table} WHERE name LIKE $1`,
+        ["p\\_%"],
+      );
+      expect(row).toEqual({ n: 3, lo: 10, hi: 30 });
     });
   });
 
-  // ==================== Type Handling ====================
-  describe("Type Handling", () => {
-    test("JSON fields", async () => {
-      const metadata = { key: "value", nested: { num: 42 } };
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name, metadata) VALUES ($1, $2) RETURNING *`,
-        ["prisma_json", JSON.stringify(metadata)],
+  describe("type handling", () => {
+    test("round-trips JSONB", async () => {
+      const [row] = await select(
+        adapter,
+        `INSERT INTO ${table} (name, metadata) VALUES ($1, $2::jsonb) RETURNING metadata`,
+        ["json_row", JSON.stringify({ a: 1, tags: ["x", "y"] })],
       );
-      expect(result.rows[0].metadata).toEqual(metadata);
+      expect(JSON.parse(String(row?.metadata))).toEqual({ a: 1, tags: ["x", "y"] });
     });
 
-    test("DateTime handling", async () => {
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name) VALUES ($1) RETURNING *`,
-        ["prisma_datetime"],
+    test("round-trips decimals without losing scale", async () => {
+      const [row] = await select(
+        adapter,
+        `INSERT INTO ${table} (name, balance) VALUES ($1, $2::numeric) RETURNING balance::text AS balance`,
+        ["decimal_row", "1234.50"],
       );
-      expect(result.rows[0].created_at).toBeDefined();
+      expect(row?.balance).toBe("1234.50");
     });
 
-    test("Decimal handling", async () => {
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name, balance) VALUES ($1, $2) RETURNING *`,
-        ["prisma_decimal", "1234.56"],
-      );
-      expect(result.rows[0].balance).toBeDefined();
+    test("returns timestamps in the adapter ISO form", async () => {
+      const [row] = await select(adapter, "SELECT '2024-01-02 03:04:05'::timestamp AS ts");
+      expect(row?.ts).toBe("2024-01-02T03:04:05+00:00");
     });
 
-    test("Boolean handling", async () => {
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name, active) VALUES ($1, $2) RETURNING *`,
-        ["prisma_bool", false],
+    test("returns NULL as null", async () => {
+      const [row] = await select(
+        adapter,
+        `INSERT INTO ${table} (name) VALUES ($1) RETURNING email, age`,
+        ["null_row"],
       );
-      expect(result.rows[0].active).toBe(false);
-    });
-
-    test("Optional/NULL fields", async () => {
-      const result = await pool.query(
-        `INSERT INTO ${testTableName} (name, email, age) VALUES ($1, $2, $3) RETURNING *`,
-        ["prisma_optional", null, null],
-      );
-      expect(result.rows[0].email).toBeNull();
-      expect(result.rows[0].age).toBeNull();
+      expect(row).toEqual({ email: null, age: null });
     });
   });
 
-  // ==================== Raw Queries ====================
-  describe("Raw Queries", () => {
-    test("$queryRaw equivalent", async () => {
-      const result = await pool.query("SELECT 'raw' as type");
-      expect(result.rows[0].type).toBe("raw");
+  describe("argument mapping", () => {
+    test("binds a null parameter", async () => {
+      const [row] = await select(
+        adapter,
+        `INSERT INTO ${table} (name, email) VALUES ($1, $2) RETURNING email`,
+        ["null_param", null],
+      );
+      expect(row).toEqual({ email: null });
     });
 
-    test("$executeRaw equivalent", async () => {
-      const name = uniqueTableName("exec_raw");
-      const result = await pool.query(`INSERT INTO ${testTableName} (name) VALUES ($1)`, [name]);
-      expect(result.rowCount).toBe(1);
+    test("binds a list parameter", async () => {
+      const result = await adapter.queryRaw(
+        toTypedQuery("SELECT $1::int[] AS xs", [
+          { value: [1, 2, 3], scalarType: "int", arity: "list" },
+        ]),
+      );
+      expect(result.rows).toEqual([[[1, 2, 3]]]);
     });
 
-    test("raw query with parameters", async () => {
-      const result = await pool.query("SELECT $1::text as param1, $2::integer as param2", [
-        "hello",
-        42,
-      ]);
-      expect(result.rows[0]).toEqual({ param1: "hello", param2: 42 });
+    test("binds a datetime string as a timestamp", async () => {
+      const result = await adapter.queryRaw(
+        toTypedQuery("SELECT $1::timestamp AS ts", [
+          { value: "2024-01-02T03:04:05.000Z", scalarType: "datetime" },
+        ]),
+      );
+      expect(result.rows).toEqual([["2024-01-02T03:04:05+00:00"]]);
     });
 
-    test("raw query with type-safe results", async () => {
-      const result = await pool.query("SELECT 1 as num, 'text' as str, true as bool");
-      expect(result.rows[0].num).toBe(1);
-      expect(result.rows[0].str).toBe("text");
-      expect(result.rows[0].bool).toBe(true);
+    test("binds base64 bytes as bytea", async () => {
+      const result = await adapter.queryRaw(
+        toTypedQuery("SELECT encode($1::bytea, 'hex') AS hex", [
+          { value: Buffer.from("hi").toString("base64"), scalarType: "bytes" },
+        ]),
+      );
+      expect(result.rows).toEqual([["6869"]]);
     });
   });
 
-  // ==================== Error Handling ====================
-  describe("Error Handling", () => {
-    test("handles unique constraint violation", async () => {
-      const uniqueEmail = `unique_${Date.now()}@example.com`;
-      await pool.query(`INSERT INTO ${testTableName} (name, email) VALUES ($1, $2)`, [
-        "prisma_unique_1",
-        uniqueEmail,
-      ]);
-
-      try {
-        await pool.query(`INSERT INTO ${testTableName} (name, email) VALUES ($1, $2)`, [
-          "prisma_unique_2",
-          uniqueEmail,
-        ]);
-        expect(true).toBe(false);
-      } catch (e) {
-        expect((e as { code: string }).code).toBe("23505"); // unique_violation
-      }
+  describe("errors", () => {
+    test("maps a unique violation", async () => {
+      const email = `dup_${Date.now()}@example.com`;
+      await adapter.executeRaw(
+        toQuery(`INSERT INTO ${table} (name, email) VALUES ($1, $2)`, ["d1", email]),
+      );
+      await expect(
+        adapter.executeRaw(
+          toQuery(`INSERT INTO ${table} (name, email) VALUES ($1, $2)`, ["d2", email]),
+        ),
+      ).rejects.toMatchObject(failure("UniqueConstraintViolation", "23505"));
     });
 
-    test("handles not null violation", async () => {
-      try {
-        await pool.query(`INSERT INTO ${testTableName} (name) VALUES ($1)`, [null]);
-        expect(true).toBe(false);
-      } catch (e) {
-        expect((e as { code: string }).code).toBe("23502"); // not_null_violation
-      }
+    test("maps a not null violation", async () => {
+      await expect(
+        adapter.executeRaw(toQuery(`INSERT INTO ${table} (name) VALUES (NULL)`, [])),
+      ).rejects.toMatchObject(failure("NullConstraintViolation", "23502"));
     });
 
-    test("handles invalid query", async () => {
-      try {
-        await pool.query("SELECT * FROM nonexistent_table_xyz");
-        expect(true).toBe(false);
-      } catch (e) {
-        expect(e).toBeDefined();
-      }
+    test("maps a missing table", async () => {
+      await expect(
+        adapter.queryRaw(toQuery("SELECT * FROM nonexistent_table_xyz", [])),
+      ).rejects.toMatchObject(failure("TableDoesNotExist", "42P01"));
     });
+  });
+});
+
+describe("Prisma adapter transactions (WebSocket)", () => {
+  const table = uniqueTableName("prisma_txn");
+  let adapter: Awaited<ReturnType<PrismaNeon["connect"]>>;
+
+  beforeAll(async () => {
+    adapter = await new PrismaNeon({ connectionString: getDatabaseUrl() }).connect();
+    await adapter.executeRaw(
+      toQuery(`CREATE TABLE ${table} (id SERIAL PRIMARY KEY, name TEXT)`, []),
+    );
+  });
+
+  afterAll(async () => {
+    await adapter.executeRaw(toQuery(`DROP TABLE IF EXISTS ${table}`, []));
+    await adapter.dispose();
+  });
+
+  async function inTransaction(
+    end: "commit" | "rollback",
+    body: (tx: Awaited<ReturnType<typeof adapter.startTransaction>>) => Promise<void>,
+    isolation?: "SERIALIZABLE",
+  ) {
+    const tx = await adapter.startTransaction(isolation);
+    try {
+      await body(tx);
+      await tx.executeRaw(toQuery(end === "commit" ? "COMMIT" : "ROLLBACK", []));
+    } catch (error) {
+      await tx.executeRaw(toQuery("ROLLBACK", [])).catch(() => undefined);
+      throw error;
+    } finally {
+      await tx[end]();
+    }
+  }
+
+  const count = async (name: string) =>
+    (await select(adapter, `SELECT name FROM ${table} WHERE name = $1`, [name])).length;
+
+  test("commit persists the write", async () => {
+    await inTransaction("commit", async (tx) => {
+      await tx.executeRaw(toQuery(`INSERT INTO ${table} (name) VALUES ($1)`, ["committed"]));
+    });
+    expect(await count("committed")).toBe(1);
+  });
+
+  test("rollback discards the write", async () => {
+    await inTransaction("rollback", async (tx) => {
+      await tx.executeRaw(toQuery(`INSERT INTO ${table} (name) VALUES ($1)`, ["rolled_back"]));
+    });
+    expect(await count("rolled_back")).toBe(0);
+  });
+
+  test("a transaction reads its own uncommitted write while others do not", async () => {
+    await inTransaction("rollback", async (tx) => {
+      await tx.executeRaw(toQuery(`INSERT INTO ${table} (name) VALUES ($1)`, ["isolated"]));
+      expect(
+        await select(tx, `SELECT name FROM ${table} WHERE name = $1`, ["isolated"]),
+      ).toHaveLength(1);
+      expect(await count("isolated")).toBe(0);
+    });
+  });
+
+  test("supports an isolation level", async () => {
+    await inTransaction(
+      "commit",
+      async (tx) => {
+        const [row] = await select(tx, "SHOW transaction_isolation");
+        expect(row).toEqual({ transaction_isolation: "serializable" });
+      },
+      "SERIALIZABLE",
+    );
   });
 });

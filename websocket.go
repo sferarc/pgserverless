@@ -71,26 +71,29 @@ func (h *Handler) RegisterWebSocket(e *echo.Echo) {
 // upstream, through the tunnel, which is what makes SCRAM work without this
 // server ever holding a credential.
 func (h *Handler) Upgrade(c echo.Context) error {
-	ctx := c.Request().Context()
+	admit := h.admitWS
+	if admit == nil {
+		admit = h.admit
+	}
+	serveWebSocket(c.Response(), c.Request(), func() (Upstream, error) { return admit(c) }, h.dialErrorFor(c))
+	return nil
+}
+
+// serveWebSocket is the transport-independent core of GET /v2.
+func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error)) {
+	ctx := r.Context()
 
 	// Admission runs BEFORE the upgrade, so a refusal is an ordinary HTTP
 	// error the client can read. Refusing after the upgrade would send the
 	// client a 101 and then a close frame, which reports as a network fault
 	// rather than as a refusal.
-	admit := h.admitWS
-	if admit == nil {
-		admit = h.admit
-	}
-	up, aerr := admit(c)
+	up, aerr := admit()
 	if aerr != nil {
-		status := http.StatusBadRequest
-		if ae, ok := errors.AsType[*AdmissionError](aerr); ok {
-			status = ae.Status
-		}
-		return c.JSON(status, ErrorResponse{Message: aerr.Error()})
+		writeAdmissionError(w, aerr)
+		return
 	}
 
-	ws, err := websocket.Accept(c.Response(), c.Request(), &websocket.AcceptOptions{
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{wsSubprotocol},
 		// The client runs in browsers and edge runtimes whose Origin this
 		// server cannot enumerate. Origin is not an authentication signal
@@ -102,7 +105,7 @@ func (h *Handler) Upgrade(c echo.Context) error {
 	if err != nil {
 		// websocket.Accept has already written a response.
 		slog.Warn("pgserverless: websocket upgrade failed", "err", err)
-		return nil
+		return
 	}
 	defer ws.CloseNow()
 
@@ -113,26 +116,26 @@ func (h *Handler) Upgrade(c echo.Context) error {
 	startup, err := declineEncryptionAndReadStartup(client)
 	if err != nil {
 		slog.Warn("pgserverless: websocket startup failed", "err", err)
-		return nil
+		return
 	}
 	if startup == nil {
 		// CancelRequest. Section 9 permits ignoring it: cancellation arrives
 		// on a second connection, which a scale-to-zero or anycast deployment
 		// may route somewhere with no knowledge of the first.
 		slog.Debug("pgserverless: websocket cancel request ignored")
-		return nil
+		return
 	}
 
-	server, err := h.dialUpstreamRaw(ctx, up)
+	server, err := dialUpstreamRaw(ctx, up)
 	if err != nil {
-		if h.onDialError != nil {
-			h.onDialError(c, err)
+		if onDialError != nil {
+			onDialError(err)
 		}
 		slog.Warn("pgserverless: websocket upstream dial failed", "err", SanitizeError(err.Error()))
 		// The client is already upgraded, so the only channel left is a close
 		// frame. Its reason is what a client surfaces to a developer.
 		_ = ws.Close(websocket.StatusInternalError, "upstream unavailable")
-		return nil
+		return
 	}
 	defer server.Close()
 
@@ -140,11 +143,10 @@ func (h *Handler) Upgrade(c echo.Context) error {
 	// so the upstream never sees it unless it is replayed.
 	if _, err := server.Write(startup); err != nil {
 		slog.Warn("pgserverless: forwarding startup failed", "err", err)
-		return nil
+		return
 	}
 
 	relay(client, server)
-	return nil
 }
 
 // declineEncryptionAndReadStartup runs the startup phase on the client side.
@@ -191,7 +193,7 @@ func declineEncryptionAndReadStartup(conn net.Conn) ([]byte, error) {
 // Unlike Dial, this returns a raw net.Conn rather than a pgx connection,
 // because nothing here speaks SQL: the client's own protocol goes over it
 // untouched.
-func (h *Handler) dialUpstreamRaw(ctx context.Context, up Upstream) (net.Conn, error) {
+func dialUpstreamRaw(ctx context.Context, up Upstream) (net.Conn, error) {
 	host, port := parseHostPort(up.Addr)
 	if host == "" {
 		host = "127.0.0.1"

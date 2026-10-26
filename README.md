@@ -12,7 +12,37 @@ go get github.com/sferarc/pgserverless
 
 Requires Go 1.26 or later.
 
-With Echo:
+With `net/http`:
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/sferarc/pgserverless"
+)
+
+func main() {
+	const db = "db.internal:5432"
+
+	h := pgserverless.NewHTTPHandler(
+		pgserverless.StaticHTTPUpstream(db),
+		// The tunnel carries credentials inside the wire protocol, so it needs
+		// an address and nothing else from the request.
+		pgserverless.WithHTTPWebSocketAdmission(func(*http.Request) (pgserverless.Upstream, error) {
+			return pgserverless.Upstream{Addr: db}, nil
+		}),
+	)
+
+	mux := http.NewServeMux()
+	mux.Handle("/", h) // POST /sql and GET /v2
+	log.Fatal(http.ListenAndServe(":4000", mux))
+}
+```
+
+With Echo, which the handler also supports:
 
 ```go
 package main
@@ -27,8 +57,6 @@ func main() {
 
 	h := pgserverless.NewHandler(
 		pgserverless.StaticUpstream(db),
-		// The tunnel carries credentials inside the wire protocol, so it needs
-		// an address and nothing else from the request.
 		pgserverless.WithWebSocketAdmission(func(echo.Context) (pgserverless.Upstream, error) {
 			return pgserverless.Upstream{Addr: db}, nil
 		}),
@@ -39,18 +67,6 @@ func main() {
 	h.RegisterWebSocket(e) // GET  /v2
 	e.Logger.Fatal(e.Start(":4000"))
 }
-```
-
-With `net/http`: an `*echo.Echo` is an `http.Handler`, so mount it on any server or mux.
-
-```go
-e := echo.New()
-h.Register(e)
-h.RegisterWebSocket(e)
-
-mux := http.NewServeMux()
-mux.Handle("/", e)
-log.Fatal(http.ListenAndServe(":4000", mux))
 ```
 
 Point the driver at it:
@@ -86,16 +102,16 @@ What the [driver conformance suite](./driver-conformance) exercises, at the vers
 
 | Client | Version | Transport | Status |
 | --- | --- | --- | --- |
-| `@neondatabase/serverless`, `neon()` | 1.1.0 | HTTP `/sql` | Covered: queries, templates, array and raw-text modes, transactions with isolation level and read-only, errors, data types |
-| `@neondatabase/serverless`, `Client`, `Pool` | 1.1.0 | WebSocket `/v2` | Covered |
-| Drizzle ORM, `drizzle-orm/neon-http` | 0.45.3 | HTTP | Covered |
+| `@neondatabase/serverless`, `neon()` | 1.2.0 | HTTP `/sql` | Covered: queries, templates, array and raw-text modes, transactions with isolation level and read-only, errors, data types |
+| `@neondatabase/serverless`, `Client`, `Pool` | 1.2.0 | WebSocket `/v2` | Covered |
+| Drizzle ORM, `drizzle-orm/neon-http` | 0.45.4 | HTTP `/sql` | Covered, including `db.batch` (Drizzle's neon-http driver has no interactive transactions) |
+| Drizzle ORM, `drizzle-orm/neon-serverless` | 0.45.4 | WebSocket `/v2` | Covered: CRUD, data types, errors, transactions with commit and rollback |
 | Kysely with `kysely-neon` | 0.29.6, 3.0.0 | HTTP | Covered |
 | Waddler, `waddler/neon-http` | 0.1.1 | HTTP | Covered |
+| Prisma, `@prisma/adapter-neon`: `PrismaNeon`, `PrismaNeonHttp` | 7.10.1 | WebSocket, HTTP | Covered through the adapter interface, with no generated client: raw queries, typed arguments, errors and WebSocket transactions. No HTTP transactions |
 
 Not covered, so not claimed:
 
-- Prisma with `@prisma/adapter-neon`. The suite's Prisma file drives the driver's own `Pool` and `neon()`, not Prisma.
-- Drizzle's WebSocket driver, `drizzle-orm/neon-serverless`.
 - Real edge runtimes. The runtime files simulate Workers, Vercel and browser conditions under Node.
 
 ## The problem this solves
@@ -123,10 +139,10 @@ Raw-text mode, the driver's primary path since it runs its own type parsers clie
 Everything a host has to decide before a query runs (which database, is this caller allowed, is the tenant paying) is one function:
 
 ```go
-type Admission func(c echo.Context) (Upstream, error)
+type HTTPAdmission func(r *http.Request) (Upstream, error)
 ```
 
-Everything after that decision (parse the body, dial, run, coerce, encode) is this package. Return an `*AdmissionError` to choose the HTTP status of a refusal, for example 403 for a suspended tenant. `StaticUpstream` is the whole implementation for a deployment in front of a single database. A multi-tenant platform's version is much larger, and that asymmetry is the point: the protocol is the same either way, and the policy is not something a library can guess.
+Everything after that decision (parse the body, dial, run, coerce, encode) is this package. Return an `*AdmissionError` to choose the HTTP status of a refusal, for example 403 for a suspended tenant. `StaticHTTPUpstream` (`StaticUpstream` for echo) is the whole implementation for a deployment in front of a single database. A multi-tenant platform's version is much larger, and that asymmetry is the point: the protocol is the same either way, and the policy is not something a library can guess.
 
 ## Transports
 
@@ -137,8 +153,8 @@ Everything after that decision (parse the body, dial, run, coerce, encode) is th
 ## Known behaviour
 
 - Only HTTP and WebSocket are served. There is no raw TCP listener for the PostgreSQL wire protocol.
-- Handlers take an `echo.Context`. There is no standalone `net/http` handler type; mount an Echo instance as shown above.
-- `StaticUpstream` reads credentials from the request's connection string header, which the WebSocket path does not carry. Give the tunnel its own admission with `WithWebSocketAdmission`.
+- `NewHandler` and its options take an `echo.Context`, and the module still depends on Echo. `NewHTTPHandler` is the `net/http` form of the same handler; both run the same code.
+- `StaticHTTPUpstream` and `StaticUpstream` read credentials from the request's connection string header, which the WebSocket path does not carry. Give the tunnel its own admission with `WithHTTPWebSocketAdmission` or `WithWebSocketAdmission`.
 - On the WebSocket path only `Addr`, `ServerName`, `InsecureSkipVerify` and `TLSMode` of the returned `Upstream` are used. User, password and database come from the client's own startup message.
 - Each HTTP request opens a connection to the database and closes it. There is no pooling; put a pooler in front of the database if it cannot take that. The driver's `Pool-Opt-In` header is accepted and ignored.
 - The upstream dial uses TLS unless `Upstream.TLSMode` is `TLSDisable`. `StaticUpstream` does not set it.
@@ -197,7 +213,7 @@ For a parity run, point `DATABASE_URL` at a Neon database and compare the two re
 
 ## Dependencies
 
-`jackc/pgx/v5` for the client and the type map, `labstack/echo/v4` for routing, `coder/websocket` for the upgrade.
+`jackc/pgx/v5` for the client and the type map, `labstack/echo/v4` for the echo entry points, `coder/websocket` for the upgrade.
 
 ## Contributing
 

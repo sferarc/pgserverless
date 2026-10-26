@@ -96,8 +96,13 @@ func PgErrorResponse(err error) (int, ErrorResponse) {
 
 // HandlePgError writes the response PgErrorResponse produces.
 func HandlePgError(c echo.Context, err error) error {
+	writePgError(c.Response(), err)
+	return nil
+}
+
+func writePgError(w http.ResponseWriter, err error) {
 	status, resp := PgErrorResponse(err)
-	return c.JSON(status, resp)
+	writeJSON(w, status, resp)
 }
 
 // classifyPgErrorStatus maps a SQLSTATE code prefix to an HTTP status.

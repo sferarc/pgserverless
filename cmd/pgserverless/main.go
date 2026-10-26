@@ -21,8 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/sferarc/pgserverless"
 )
 
@@ -55,18 +53,14 @@ func run() error {
 	}
 
 	tls := tlsMode(dbURL)
-	h := pgserverless.NewHandler(httpAdmission(db, tls), pgserverless.WithWebSocketAdmission(wsAdmission(db, tls)))
-
-	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = true
-	h.Register(e)
-	h.RegisterWebSocket(e)
-	e.GET("/health", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	mux := http.NewServeMux()
+	mux.Handle("/", pgserverless.NewHTTPHandler(httpAdmission(db, tls), pgserverless.WithHTTPWebSocketAdmission(wsAdmission(db, tls))))
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
 	})
 
-	srv := &http.Server{Addr: addr, Handler: e, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -95,9 +89,9 @@ func run() error {
 // user named in the request's own connection string. DATABASE_URL's
 // credentials are never lent out: a request without the header is refused, so
 // a cross-site form post to a loopback listener cannot run SQL.
-func httpAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.Admission {
-	return func(c echo.Context) (pgserverless.Upstream, error) {
-		ci, err := pgserverless.ParseConnectionString(c.Request().Header.Get("Connection-String"))
+func httpAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.HTTPAdmission {
+	return func(r *http.Request) (pgserverless.Upstream, error) {
+		ci, err := pgserverless.ParseConnectionString(r.Header.Get("Connection-String"))
 		if err != nil {
 			return pgserverless.Upstream{}, err
 		}
@@ -108,8 +102,8 @@ func httpAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.Admission
 }
 
 // wsAdmission only routes: on GET /v2 the client authenticates inside the tunnel.
-func wsAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.Admission {
-	return func(echo.Context) (pgserverless.Upstream, error) {
+func wsAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.HTTPAdmission {
+	return func(*http.Request) (pgserverless.Upstream, error) {
 		return upstream(db, tls), nil
 	}
 }

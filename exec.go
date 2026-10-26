@@ -7,7 +7,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/labstack/echo/v4"
 )
 
 func QueryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, arrayMode, rawText bool) (*QueryResult, error) {
@@ -20,12 +19,13 @@ func QueryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 }
 
 // executeSingle executes a single query and returns the result as JSON.
-func (h *Handler) executeSingle(c echo.Context, conn *pgx.Conn, ctx context.Context, query string, params []any, arrayMode, rawText bool) error {
+func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, query string, params []any, arrayMode, rawText bool) {
 	result, err := QueryRows(ctx, conn, query, params, arrayMode, rawText)
 	if err != nil {
-		return HandlePgError(c, err)
+		writePgError(w, err)
+		return
 	}
-	return c.JSON(http.StatusOK, result)
+	writeJSON(w, http.StatusOK, result)
 }
 
 // executeBatch executes multiple queries in a transaction and returns all
@@ -33,9 +33,10 @@ func (h *Handler) executeSingle(c echo.Context, conn *pgx.Conn, ctx context.Cont
 // (read-only / isolation level / deferrable) the batch is wrapped in an
 // explicit BEGIN … COMMIT so PostgreSQL applies and enforces them; otherwise it
 // runs as a single implicit-transaction pipeline (pgx.SendBatch).
-func (h *Handler) executeBatch(c echo.Context, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions) error {
+func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions) {
 	if !opts.isDefault() {
-		return h.executeBatchTxn(c, conn, ctx, queries, arrayMode, rawText, opts)
+		executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts)
+		return
 	}
 
 	batch := &pgx.Batch{}
@@ -50,17 +51,44 @@ func (h *Handler) executeBatch(c echo.Context, conn *pgx.Conn, ctx context.Conte
 	for i := range queries {
 		rows, err := br.Query()
 		if err != nil {
-			return HandlePgError(c, err)
+			writePgError(w, err)
+			return
 		}
 		result, err := RowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText)
 		rows.Close()
 		if err != nil {
-			return HandlePgError(c, err)
+			writePgError(w, err)
+			return
 		}
 		results = append(results, *result)
 	}
 
-	return c.JSON(http.StatusOK, BatchResponse{Results: results})
+	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
+}
+
+// executeBatchSimple runs a simple-protocol batch the way executeBatch does,
+// as one simple query that pgx joins with ';', so a policy proxy still sees and
+// brackets the whole batch itself. Each item must be one complete statement,
+// and a newline on both sides of every ';' keeps a trailing -- comment from
+// swallowing the next item.
+func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode, rawText bool, opts txnOptions) {
+	// executeBatchTxn queues BEGIN before and COMMIT after the items.
+	txn := !opts.isDefault()
+	joined := make([]QueryItem, len(queries))
+	for i, q := range queries {
+		if err := checkBatchItem(count, q.Query); err != nil {
+			writePgError(w, err)
+			return
+		}
+		if i > 0 || txn {
+			q.Query = "\n" + q.Query
+		}
+		if i < len(queries)-1 || txn {
+			q.Query += "\n"
+		}
+		joined[i] = q
+	}
+	executeBatch(w, conn, ctx, joined, arrayMode, rawText, opts)
 }
 
 // executeBatchTxn runs the batch inside an explicit transaction with the
@@ -70,7 +98,7 @@ func (h *Handler) executeBatch(c echo.Context, conn *pgx.Conn, ctx context.Conte
 // 25006, failing closed exactly like the proxy's read-only policy. A failure in
 // any statement aborts the transaction (no COMMIT is reached), so partial
 // effects never persist.
-func (h *Handler) executeBatchTxn(c echo.Context, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions) error {
+func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions) {
 	batch := &pgx.Batch{}
 	batch.Queue(opts.beginSQL())
 	for _, q := range queries {
@@ -83,29 +111,33 @@ func (h *Handler) executeBatchTxn(c echo.Context, conn *pgx.Conn, ctx context.Co
 
 	// Drain the BEGIN result.
 	if _, err := br.Exec(); err != nil {
-		return HandlePgError(c, err)
+		writePgError(w, err)
+		return
 	}
 
 	results := make([]QueryResult, 0, len(queries))
 	for i := range queries {
 		rows, err := br.Query()
 		if err != nil {
-			return HandlePgError(c, err)
+			writePgError(w, err)
+			return
 		}
 		result, err := RowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText)
 		rows.Close()
 		if err != nil {
-			return HandlePgError(c, err)
+			writePgError(w, err)
+			return
 		}
 		results = append(results, *result)
 	}
 
 	// Drain the COMMIT result.
 	if _, err := br.Exec(); err != nil {
-		return HandlePgError(c, err)
+		writePgError(w, err)
+		return
 	}
 
-	return c.JSON(http.StatusOK, BatchResponse{Results: results})
+	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 
 // batchArrayMode resolves the effective array mode for one batch item: a

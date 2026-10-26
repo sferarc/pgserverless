@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,11 +25,39 @@ const wsTestTimeout = 10 * time.Second
 
 func startWSServer(t *testing.T, admit Admission, opts ...Option) *httptest.Server {
 	t.Helper()
-	e := echo.New()
-	NewHandler(admit, opts...).RegisterWebSocket(e)
-	srv := httptest.NewServer(e)
+	var handler http.Handler
+	if os.Getenv("PGSERVERLESS_TEST_STDLIB") == "true" {
+		handler = stdlibWSHandler(admit, opts...)
+	} else {
+		e := echo.New()
+		NewHandler(admit, opts...).RegisterWebSocket(e)
+		handler = e
+	}
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// stdlibWSHandler runs an echo-shaped Admission and options through NewHTTPHandler.
+func stdlibWSHandler(admit Admission, opts ...Option) http.Handler {
+	cfg := &Handler{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	e := echo.New()
+	bind := func(a Admission) HTTPAdmission {
+		return func(r *http.Request) (Upstream, error) { return a(e.NewContext(r, nil)) }
+	}
+	hopts := []HTTPOption{}
+	if cfg.admitWS != nil {
+		hopts = append(hopts, WithHTTPWebSocketAdmission(bind(cfg.admitWS)))
+	}
+	if cfg.onDialError != nil {
+		hopts = append(hopts, WithHTTPDialErrorHook(func(r *http.Request, err error) {
+			cfg.onDialError(e.NewContext(r, nil), err)
+		}))
+	}
+	return NewHTTPHandler(bind(admit), hopts...)
 }
 
 func fakeUpstream(pg *pgfake.PG) Admission {
@@ -272,4 +301,43 @@ func TestUpgradeEndsWhenTheClientHangsUp(t *testing.T) {
 	case <-time.After(wsTestTimeout):
 		t.Fatal("the upstream connection stayed open after the client left")
 	}
+}
+
+func TestHTTPHandlerWebSocketAdmissionRefusal(t *testing.T) {
+	srv := httptest.NewServer(NewHTTPHandler(func(*http.Request) (Upstream, error) {
+		return Upstream{}, &AdmissionError{Status: http.StatusForbidden, Message: "no"}
+	}))
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + WebSocketPath)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestHTTPHandlerRelaysSessionToUpstream(t *testing.T) {
+	pg := pgfake.New(t)
+	srv := httptest.NewServer(NewHTTPHandler(func(*http.Request) (Upstream, error) {
+		return Upstream{Addr: pg.Addr(), InsecureSkipVerify: true}, nil
+	}))
+	t.Cleanup(srv.Close)
+	_, _, conn := dialWS(t, srv)
+
+	_, err := conn.Write(sslRequestBytes(t))
+	require.NoError(t, err)
+	answer := make([]byte, 1)
+	_, err = io.ReadFull(conn, answer)
+	require.NoError(t, err)
+	assert.Equal(t, byte('N'), answer[0])
+
+	_, err = conn.Write(startupBytes(t))
+	require.NoError(t, err)
+	fe := pgproto3.NewFrontend(conn, conn)
+	for {
+		msg, err := fe.Receive()
+		require.NoError(t, err)
+		if _, ok := msg.(*pgproto3.ReadyForQuery); ok {
+			break
+		}
+	}
+	assert.Equal(t, "u", pg.StartupParam("user"))
 }

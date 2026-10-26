@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -50,9 +51,12 @@ const oidText uint32 = 25
 
 // newConformanceServer wires a real serverless Server whose /sql loopback
 // points at the fake PostgreSQL backend, with one project registered for
-// subdomain routing. It returns the echo engine to drive requests.
-func newConformanceServer(t *testing.T, pg *pgfake.PG) *echo.Echo {
+// subdomain routing. It returns the echo engine, or the stdlib handler when PGSERVERLESS_TEST_STDLIB is true.
+func newConformanceServer(t *testing.T, pg *pgfake.PG) http.Handler {
 	t.Helper()
+	if os.Getenv("PGSERVERLESS_TEST_STDLIB") == "true" {
+		return newStdlibConformanceServer(pg)
+	}
 	e := echo.New()
 	static := StaticUpstream(pg.Addr())
 	NewHandler(func(c echo.Context) (Upstream, error) {
@@ -69,7 +73,7 @@ func newConformanceServer(t *testing.T, pg *pgfake.PG) *echo.Echo {
 
 // doSQL issues a POST /sql with the given JSON body and headers, returning the
 // recorder. The connection string targets the conformance project host.
-func doSQL(e *echo.Echo, body string, headers map[string]string) *httptest.ResponseRecorder {
+func doSQL(e http.Handler, body string, headers map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/sql", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Neon-Connection-String", "postgresql://u:p@"+conformanceHost+"/db")
@@ -176,6 +180,50 @@ func TestConformance_SingleQuery_ArrayMode_Body(t *testing.T) {
 	row0, ok := result.Rows[0].([]any)
 	require.True(t, ok)
 	assert.EqualValues(t, 7, row0[0])
+}
+
+// A single query's arrayMode:false beats Neon-Array-Mode:true, since Neon resolves array_mode.unwrap_or(header).
+func TestConformance_SingleQuery_ArrayMode_BodyFalseOverridesHeader(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT 7 AS n", pgfake.Result{
+		Cols: []pgfake.Col{{Name: "n", TypeOID: oidInt4}},
+		Rows: [][]any{{int32(7)}},
+		Tag:  "SELECT 1",
+	})
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, `{"query":"SELECT 7 AS n","arrayMode":false}`, map[string]string{
+		"Neon-Array-Mode": "true",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var result QueryResult
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	assert.False(t, result.RowAsArray)
+	row0, ok := result.Rows[0].(map[string]any)
+	require.True(t, ok, "body arrayMode:false must return object rows")
+	assert.EqualValues(t, 7, row0["n"])
+}
+
+// A batch has no top-level arrayMode in Neon; ours only turns array mode on, so false leaves the header in charge.
+func TestConformance_BatchTopLevelArrayModeFalseKeepsHeader(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT 1 AS a", pgfake.Result{
+		Cols: []pgfake.Col{{Name: "a", TypeOID: oidInt4}},
+		Rows: [][]any{{int32(1)}},
+		Tag:  "SELECT 1",
+	})
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, `{"queries":[{"query":"SELECT 1 AS a"}],"arrayMode":false}`, map[string]string{
+		"Neon-Array-Mode": "true",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var batch BatchResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &batch))
+	require.Len(t, batch.Results, 1)
+	assert.True(t, batch.Results[0].RowAsArray)
 }
 
 // ---------------------------------------------------------------------------
@@ -834,16 +882,15 @@ func TestConformance_RawTextOutput_BatchArrayMode(t *testing.T) {
 // the driver-visible pg-error JSON. Enforcement is server-side (PostgreSQL),
 // layered on top of any proxy read-only policy.
 //
-// Run for both transports: the extended-protocol path (no raw text) and the
-// simple-protocol path the real driver uses (it always sets raw-text output).
-// Both must reject the write identically.
+// Run for both output modes: native values, and raw text, which the real driver
+// always sets. Both must reject the write identically.
 func TestConformance_BatchReadOnly_RejectsWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		headers map[string]string
 	}{
 		{"extended protocol", map[string]string{"Neon-Batch-Read-Only": "true"}},
-		{"raw text (simple protocol)", map[string]string{
+		{"raw text", map[string]string{
 			"Neon-Batch-Read-Only": "true",
 			"Neon-Raw-Text-Output": "true",
 			"Neon-Array-Mode":      "true",

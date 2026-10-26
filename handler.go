@@ -54,6 +54,13 @@ type Upstream struct {
 	// private network often does not serve TLS at all, and without this the
 	// dial fails with "server refused TLS connection" and no way to proceed.
 	TLSMode string
+	// RawTextSimpleProtocol keeps raw-text requests on the simple query
+	// protocol. It is for an upstream that can only rewrite or hold a statement
+	// sent as a simple query, such as a policy proxy. A query holding several
+	// statements is still refused, and a batch is still joined into one query.
+	// It is ignored unless the handler has a statement counter
+	// (WithStatementCounter).
+	RawTextSimpleProtocol bool
 }
 
 // TLS modes for Upstream.TLSMode.
@@ -94,19 +101,22 @@ type Admission func(c echo.Context) (Upstream, error)
 // reference for what an Admission has to produce.
 func StaticUpstream(addr string) Admission {
 	return func(c echo.Context) (Upstream, error) {
-		ci, err := ParseConnectionString(c.Request().Header.Get("Connection-String"))
-		if err != nil {
-			return Upstream{}, err
-		}
-		return Upstream{
-			Addr:               addr,
-			ServerName:         ci.Host,
-			User:               ci.User,
-			Password:           ci.Password,
-			Database:           ci.Database,
-			InsecureSkipVerify: false,
-		}, nil
+		return staticUpstream(addr, c.Request())
 	}
+}
+
+func staticUpstream(addr string, r *http.Request) (Upstream, error) {
+	ci, err := ParseConnectionString(r.Header.Get("Connection-String"))
+	if err != nil {
+		return Upstream{}, err
+	}
+	return Upstream{
+		Addr:       addr,
+		ServerName: ci.Host,
+		User:       ci.User,
+		Password:   ci.Password,
+		Database:   ci.Database,
+	}, nil
 }
 
 // Option configures a Handler.
@@ -119,15 +129,24 @@ func WithDialErrorHook(fn func(c echo.Context, err error)) Option {
 	return func(h *Handler) { h.onDialError = fn }
 }
 
+// WithStatementCounter sets the function that returns how many statements
+// PostgreSQL parses sql into, or the syntax error it reports. The simple
+// protocol of Upstream.RawTextSimpleProtocol relies on it to refuse a query or
+// batch item that does not hold exactly one statement.
+func WithStatementCounter(fn func(sql string) (int, error)) Option {
+	return func(h *Handler) { h.countStatements = fn }
+}
+
 // Handler serves both transports: the HTTP (fetch) transport at POST /sql, and
 // the WebSocket tunnel at GET /v2.
 //
 // They are mounted separately, by Register and RegisterWebSocket, because a
 // deployment may want one without the other.
 type Handler struct {
-	admit       Admission
-	admitWS     Admission
-	onDialError func(c echo.Context, err error)
+	admit           Admission
+	admitWS         Admission
+	onDialError     func(c echo.Context, err error)
+	countStatements func(sql string) (int, error)
 }
 
 // NewHandler returns a Handler that admits requests through admit.
@@ -149,6 +168,15 @@ func (h *Handler) Register(e *echo.Echo) {
 // Dial opens a connection to up. simpleProtocol selects the simple query
 // protocol, which returns every value in text format.
 func Dial(ctx context.Context, up Upstream, simpleProtocol bool) (*pgx.Conn, error) {
+	var mode pgx.QueryExecMode
+	if simpleProtocol {
+		mode = pgx.QueryExecModeSimpleProtocol
+	}
+	return dial(ctx, up, mode)
+}
+
+// dial opens a connection to up that runs queries in mode; zero keeps pgx's default.
+func dial(ctx context.Context, up Upstream, mode pgx.QueryExecMode) (*pgx.Conn, error) {
 	host, portStr := parseHostPort(up.Addr)
 	if host == "" {
 		host = "127.0.0.1"
@@ -179,8 +207,8 @@ func Dial(ctx context.Context, up Upstream, simpleProtocol bool) (*pgx.Conn, err
 	if up.AppName != "" {
 		cfg.RuntimeParams["application_name"] = up.AppName
 	}
-	if simpleProtocol {
-		cfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	if mode != 0 {
+		cfg.DefaultQueryExecMode = mode
 	}
 	return pgx.ConnectConfig(ctx, cfg)
 }
@@ -188,66 +216,110 @@ func Dial(ctx context.Context, up Upstream, simpleProtocol bool) (*pgx.Conn, err
 // Query handles one serverless HTTP SQL request: single statement or batch,
 // object or array rows, native or raw-text values.
 func (h *Handler) Query(c echo.Context) error {
-	ctx := c.Request().Context()
+	serveSQL(c.Response(), c.Request(), func() (Upstream, error) { return h.admit(c) }, h.dialErrorFor(c), h.countStatements)
+	return nil
+}
 
-	up, aerr := h.admit(c)
+func (h *Handler) dialErrorFor(c echo.Context) func(error) {
+	if h.onDialError == nil {
+		return nil
+	}
+	return func(err error) { h.onDialError(c, err) }
+}
+
+// serveSQL is the transport-independent core of POST /sql.
+func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error)) {
+	up, aerr := admit()
 	if aerr != nil {
-		status := http.StatusBadRequest
-		if ae, ok := errors.AsType[*AdmissionError](aerr); ok {
-			status = ae.Status
-		}
-		return c.JSON(status, ErrorResponse{Message: aerr.Error()})
+		writeAdmissionError(w, aerr)
+		return
 	}
 
-	req, rerr := decodeSQLRequest(c)
+	req, rerr := decodeSQLRequest(r)
 	if rerr != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: rerr.Error()})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Message: rerr.Error()})
+		return
 	}
 
-	arrayMode := c.Request().Header.Get("Array-Mode") == "true"
-	if req.ArrayMode != nil && *req.ArrayMode {
-		arrayMode = true
-	}
+	arrayMode := requestArrayMode(r.Header, req)
 
 	// Raw-text output: the driver runs its own node-postgres type parsers
 	// client-side keyed by dataTypeID, so it expects exactly what upstream
 	// PostgreSQL would have sent in text format. It always sets this on its
 	// real fetch path.
-	rawText := c.Request().Header.Get("Raw-Text-Output") == "true"
+	rawText := r.Header.Get("Raw-Text-Output") == "true"
 
-	txnOpts, terr := parseTxnOptions(c.Request().Header)
+	txnOpts, terr := parseTxnOptions(r.Header)
 	if terr != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: terr.Error()})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Message: terr.Error()})
+		return
 	}
 
-	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	queryCtx, cancel := context.WithTimeout(r.Context(), QueryTimeout)
 	defer cancel()
 
-	// Raw-text mode selects the simple query protocol, which always returns
-	// text-format values. That applies uniformly to single queries and to
-	// batch pipelines, where per-query result-format directives do not exist.
-	conn, err := Dial(queryCtx, up, rawText)
+	// Raw-text mode runs like Neon's text query: the extended protocol with
+	// untyped text parameters and text results, one statement per query. The
+	// simple protocol would run every statement in a query and joins a batch
+	// with ';', so a trailing line comment swallowed the next batch item.
+	simple := rawText && up.RawTextSimpleProtocol && count != nil
+	var mode pgx.QueryExecMode
+	switch {
+	case simple:
+		mode = pgx.QueryExecModeSimpleProtocol
+	case rawText:
+		mode = pgx.QueryExecModeExec
+	}
+	conn, err := dial(queryCtx, up, mode)
 	if err != nil {
-		if h.onDialError != nil {
-			h.onDialError(c, err)
+		if onDialError != nil {
+			onDialError(err)
 		}
 		slog.Warn("pgserverless: connect failed", "err", SanitizeError(err.Error()))
-		return HandlePgError(c, err)
+		writePgError(w, err)
+		return
 	}
 	defer conn.Close(context.Background())
 
-	if req.Queries != nil {
-		return h.executeBatch(c, conn, queryCtx, req.Queries, arrayMode, rawText, txnOpts)
+	switch {
+	case req.Queries != nil && simple:
+		executeBatchSimple(w, conn, queryCtx, req.Queries, count, arrayMode, rawText, txnOpts)
+		return
+	case req.Queries != nil:
+		executeBatch(w, conn, queryCtx, req.Queries, arrayMode, rawText, txnOpts)
+		return
+	case simple:
+		if err := checkSingleStatement(count, *req.Query); err != nil {
+			writePgError(w, err)
+			return
+		}
 	}
-	return h.executeSingle(c, conn, queryCtx, *req.Query, ConvertParams(req.Params), arrayMode, rawText)
+	executeSingle(w, conn, queryCtx, *req.Query, ConvertParams(req.Params), arrayMode, rawText)
+}
+
+// writeJSON writes v as JSON; echo's debug and ?pretty indentation and custom serializer do not apply.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("pgserverless: encode response failed", "err", err)
+	}
+}
+
+func writeAdmissionError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	if ae, ok := errors.AsType[*AdmissionError](err); ok {
+		status = ae.Status
+	}
+	writeJSON(w, status, ErrorResponse{Message: err.Error()})
 }
 
 // decodeSQLRequest reads and validates the request body. Splitting it out of
-// Query keeps one function per decision: this one decides whether the request
-// is well formed, Query decides what to do with a well formed one.
-func decodeSQLRequest(c echo.Context) (*SQLRequest, error) {
+// serveSQL keeps one function per decision: this one decides whether the
+// request is well formed, serveSQL decides what to do with a well formed one.
+func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 	var req SQLRequest
-	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		return nil, ErrInvalidRequest
 	}
 
@@ -261,27 +333,43 @@ func decodeSQLRequest(c echo.Context) (*SQLRequest, error) {
 	return &req, nil
 }
 
-// NormalizeHeaders maps the driver's Neon-prefixed request headers onto the
+// requestArrayMode lets a single query's arrayMode override the header either way, as Neon and batchArrayMode do.
+func requestArrayMode(h http.Header, req *SQLRequest) bool {
+	arrayMode := h.Get("Array-Mode") == "true"
+	if req.ArrayMode == nil {
+		return arrayMode
+	}
+	if req.Queries == nil {
+		return *req.ArrayMode
+	}
+	return arrayMode || *req.ArrayMode
+}
+
+// normalizeHeaders maps the driver's Neon-prefixed request headers onto the
 // plain names the handler reads. A header already set under the plain name
 // wins, so a caller can drive the handler directly without the prefix.
-func NormalizeHeaders(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		h := c.Request().Header
-		for _, m := range [][2]string{
-			{"Neon-Connection-String", "Connection-String"},
-			{"Neon-Raw-Text-Output", "Raw-Text-Output"},
-			{"Neon-Array-Mode", "Array-Mode"},
-			{"Neon-Pool-Opt-In", "Pool-Opt-In"},
-			{"Neon-Batch-Read-Only", "Batch-Read-Only"},
-			{"Neon-Batch-Isolation-Level", "Batch-Isolation-Level"},
-			{"Neon-Batch-Deferrable", "Batch-Deferrable"},
-		} {
-			if h.Get(m[1]) == "" {
-				if v := h.Get(m[0]); v != "" {
-					h.Set(m[1], v)
-				}
+func normalizeHeaders(h http.Header) {
+	for _, m := range [][2]string{
+		{"Neon-Connection-String", "Connection-String"},
+		{"Neon-Raw-Text-Output", "Raw-Text-Output"},
+		{"Neon-Array-Mode", "Array-Mode"},
+		{"Neon-Pool-Opt-In", "Pool-Opt-In"},
+		{"Neon-Batch-Read-Only", "Batch-Read-Only"},
+		{"Neon-Batch-Isolation-Level", "Batch-Isolation-Level"},
+		{"Neon-Batch-Deferrable", "Batch-Deferrable"},
+	} {
+		if h.Get(m[1]) == "" {
+			if v := h.Get(m[0]); v != "" {
+				h.Set(m[1], v)
 			}
 		}
+	}
+}
+
+// NormalizeHeaders is the echo middleware form of the header normalization.
+func NormalizeHeaders(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		normalizeHeaders(c.Request().Header)
 		return next(c)
 	}
 }

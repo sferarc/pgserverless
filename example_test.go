@@ -12,9 +12,26 @@ import (
 	"github.com/sferarc/pgserverless"
 )
 
-// A complete server for one database. Echo is an http.Handler, so it mounts on
-// any net/http server.
+// A complete server for one database, with no web framework.
 func Example() {
+	upstream := pgserverless.Upstream{Addr: "db.internal:5432"}
+
+	h := pgserverless.NewHTTPHandler(
+		pgserverless.StaticHTTPUpstream(upstream.Addr),
+		// The tunnel carries credentials inside the wire protocol, so it
+		// needs an address and nothing else from the request.
+		pgserverless.WithHTTPWebSocketAdmission(func(*http.Request) (pgserverless.Upstream, error) {
+			return upstream, nil
+		}),
+	)
+
+	srv := &http.Server{Addr: ":4000", Handler: h}
+	_ = srv // srv.ListenAndServe() in a real program
+}
+
+// The same server on echo. Echo is an http.Handler, so it mounts on any
+// net/http server.
+func ExampleNewHandler() {
 	upstream := pgserverless.Upstream{Addr: "db.internal:5432"}
 
 	h := pgserverless.NewHandler(

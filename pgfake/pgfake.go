@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -46,10 +47,9 @@ type PG struct {
 	// lastStartup records the parameters of the most recent StartupMessage
 	// (user, database, application_name, ...) for audit-source assertions.
 	lastStartup map[string]string
-	// lastSimpleSQL records the most recent simple-protocol Query payload, ""
-	// when the connection only used the extended protocol. Lets tests assert
-	// which protocol a handler selected.
-	lastSimpleSQL string
+	// simpleSQL records every simple-protocol Query payload in order, so tests
+	// can assert which protocol a handler selected and how it split a request.
+	simpleSQL []string
 	// lastBindParams records the parameter values of the most recent Bind.
 	lastBindParams [][]byte
 
@@ -159,11 +159,22 @@ func (f *PG) LastBindParams() [][]byte {
 	return f.lastBindParams
 }
 
-// LastSimpleSQL returns the most recent simple-protocol Query payload.
+// LastSimpleSQL returns the most recent simple-protocol Query payload, "" when
+// only the extended protocol was used.
 func (f *PG) LastSimpleSQL() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.lastSimpleSQL
+	if len(f.simpleSQL) == 0 {
+		return ""
+	}
+	return f.simpleSQL[len(f.simpleSQL)-1]
+}
+
+// SimpleSQL returns every simple-protocol Query payload, oldest first.
+func (f *PG) SimpleSQL() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.simpleSQL)
 }
 
 func (f *PG) serve() {
@@ -192,10 +203,11 @@ type session struct {
 }
 
 // isControlSQL reports whether sql is a transaction-control statement the fake
-// backend interprets directly (BEGIN with optional characteristics, or COMMIT).
+// backend interprets directly (BEGIN with optional characteristics, COMMIT or
+// ROLLBACK).
 func isControlSQL(sql string) bool {
 	u := strings.ToUpper(strings.TrimSpace(sql))
-	return strings.HasPrefix(u, "BEGIN") || u == "COMMIT" || u == "END"
+	return strings.HasPrefix(u, "BEGIN") || u == "COMMIT" || u == "END" || u == "ROLLBACK"
 }
 
 // splitSimpleQuery splits a simple-protocol query string into its individual
@@ -253,8 +265,8 @@ func (f *PG) handle(conn net.Conn) {
 	be.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: "16.0 (pgfake)"})
 	be.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
 	// pgx requires standard_conforming_strings=on before it will run simple-
-	// protocol queries with arguments (the raw-text output path uses simple
-	// protocol). A real PostgreSQL server always reports this.
+	// protocol queries with arguments. A real PostgreSQL server always reports
+	// this.
 	be.Send(&pgproto3.ParameterStatus{Name: "standard_conforming_strings", Value: "on"})
 	be.Send(&pgproto3.BackendKeyData{ProcessID: 1, SecretKey: []byte{0, 0, 0, 1}})
 	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
@@ -288,14 +300,14 @@ func (f *PG) handle(conn net.Conn) {
 		switch m := msg.(type) {
 		case *pgproto3.Query:
 			f.mu.Lock()
-			f.lastSimpleSQL = m.String
+			f.simpleSQL = append(f.simpleSQL, m.String)
 			f.mu.Unlock()
 			// Simple query protocol: always text format. A single Query may
 			// carry multiple statements separated by ';' (pgx uses this for
-			// SendBatch in simple-protocol mode, which the raw-text path
-			// selects). Each statement produces its own result set; a single
-			// ReadyForQuery terminates the whole simple-query message. On the
-			// first error PostgreSQL stops executing the remaining statements.
+			// SendBatch in simple-protocol mode). Each statement produces its
+			// own result set; a single ReadyForQuery terminates the whole
+			// simple-query message. On the first error PostgreSQL stops
+			// executing the remaining statements.
 			for _, stmt := range splitSimpleQuery(m.String) {
 				f.writeResult(be, s, stmt, true, nil)
 				if s.aborted {
@@ -308,6 +320,16 @@ func (f *PG) handle(conn net.Conn) {
 			_ = be.Flush()
 
 		case *pgproto3.Parse:
+			if len(splitSimpleQuery(m.Query)) > 1 {
+				// PostgreSQL refuses to prepare more than one statement.
+				s.aborted = true
+				be.Send(&pgproto3.ErrorResponse{
+					Severity: "ERROR",
+					Code:     "42601",
+					Message:  "cannot insert multiple commands into a prepared statement",
+				})
+				break
+			}
 			s.statements[m.Name] = m.Query
 			be.Send(&pgproto3.ParseComplete{})
 
@@ -400,6 +422,9 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 			s.readOnly = strings.Contains(u, "READ ONLY")
 			f.setLastBegin(sql)
 			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
+		case u == "ROLLBACK":
+			s.resetTxn()
+			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("ROLLBACK")})
 		default: // COMMIT / END
 			s.resetTxn()
 			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("COMMIT")})

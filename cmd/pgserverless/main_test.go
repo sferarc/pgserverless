@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/sferarc/pgserverless"
 )
 
@@ -53,7 +51,7 @@ func TestHTTPAdmission(t *testing.T) {
 	t.Run("request credentials, DATABASE_URL host", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sql", nil)
 		req.Header.Set("Connection-String", "postgres://reader:pw@elsewhere.example.test/other")
-		up, err := admit(echo.New().NewContext(req, httptest.NewRecorder()))
+		up, err := admit(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +66,7 @@ func TestHTTPAdmission(t *testing.T) {
 
 	t.Run("no header is refused, never DATABASE_URL credentials", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sql", nil)
-		up, err := admit(echo.New().NewContext(req, httptest.NewRecorder()))
+		up, err := admit(req)
 		if err == nil {
 			t.Fatalf("want an error, got %+v", up)
 		}
@@ -77,7 +75,7 @@ func TestHTTPAdmission(t *testing.T) {
 	t.Run("malformed header is refused", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sql", nil)
 		req.Header.Set("Connection-String", "not a url")
-		if _, err := admit(echo.New().NewContext(req, httptest.NewRecorder())); err == nil {
+		if _, err := admit(req); err == nil {
 			t.Error("want an error")
 		}
 	})
@@ -89,7 +87,7 @@ func TestWSAdmissionCarriesNoCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v2", nil)
-	up, err := wsAdmission(db, pgserverless.TLSRequire)(echo.New().NewContext(req, httptest.NewRecorder()))
+	up, err := wsAdmission(db, pgserverless.TLSRequire)(req)
 	if err != nil {
 		t.Fatal(err)
 	}

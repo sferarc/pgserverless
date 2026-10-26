@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- 7d0c4b1: `NewHTTPHandler` serves `POST /sql` and `GET /v2` as a plain `net/http` handler, so the module no longer needs echo to be mounted. `HTTPAdmission` is its extension point, with `WithHTTPWebSocketAdmission`, `WithHTTPDialErrorHook`, `StaticHTTPUpstream` and `NormalizeHTTPHeaders` beside it. The echo entry points are unchanged and now wrap the same core. `cmd/pgserverless` is a minimal reference server for one database from `DATABASE_URL`, serving `POST /sql`, `GET /v2` and `GET /health`. The driver conformance suite targets it through `PGSERVERLESS_BIN` and now also covers Prisma through `@prisma/adapter-neon`. `pgfake` identifies itself neutrally.
+
+### Patch Changes
+
+- d6170b6: A single query's `arrayMode: false` in the request body now returns object rows even when `Neon-Array-Mode: true` is set, matching Neon. Before, the body could only turn array mode on.
+- 4dd5d09: Raw-text requests, which is every request the Neon driver sends, now run on the extended protocol with untyped text parameters, as Neon does. A batch item ending in a `--` comment no longer comments out the next item (it used to fail the batch with a 500), and a query holding several statements is refused with `42601` instead of running all of them and returning only the first result. `Upstream.RawTextSimpleProtocol` keeps raw-text requests on the simple protocol for an upstream that enforces some statement rules only there.
+- fa902b8: Raw-text requests on `Upstream.RawTextSimpleProtocol` now follow Neon's statement rules too, counted by the function passed to the new `WithStatementCounter` (or `WithHTTPStatementCounter`) option, which should be a real PostgreSQL parser; without one, `RawTextSimpleProtocol` is ignored and requests use the extended protocol. A query holding several statements, or one the counter cannot parse, is refused with `42601` before it is sent. A batch is still sent as one joined query, but each item must be one statement the counter can parse (else `42601`) and the `;` separators sit on their own line, so an item ending in a `--` comment no longer comments out the next one.
+
+## 0.1.1
+
+### Patch Changes
+
+- 4709fd3: Error messages that carry a libpq keyword connection string with `password=` or `sslpassword=`, quoted or not, are now replaced with the generic upstream failure message instead of being logged or returned. Only `postgres://` URLs were covered before.
+
 ## 0.1.0
 
 First release.

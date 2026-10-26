@@ -6,6 +6,17 @@
 // with no TCP sockets, and more than one provider implements it, so this
 // package treats it as a shared protocol rather than as one vendor's endpoint.
 //
+// # Quick start
+//
+//	upstream := pgserverless.Upstream{Addr: "db.internal:5432"}
+//	h := pgserverless.NewHTTPHandler(
+//		pgserverless.StaticHTTPUpstream(upstream.Addr),
+//		pgserverless.WithHTTPWebSocketAdmission(func(*http.Request) (pgserverless.Upstream, error) {
+//			return upstream, nil
+//		}),
+//	)
+//	http.ListenAndServe(":4000", h)
+//
 // # Scope
 //
 // Both transports. POST /sql carries one request and one response, and is what
@@ -23,10 +34,14 @@
 // Everything a host has to decide before a query runs (which database, is this
 // caller allowed, is the tenant paying) is one function:
 //
-//	type Admission func(c echo.Context) (Upstream, error)
+//	type HTTPAdmission func(r *http.Request) (Upstream, error)
+//
+// NewHTTPHandler serves both transports from a plain http.Handler. The echo
+// entry points (NewHandler, Register, RegisterWebSocket) take an Admission over
+// an echo.Context instead and run the same code.
 //
 // Everything after that decision (parse the body, dial, run, coerce values,
-// encode the response) is this package. StaticUpstream is the whole
+// encode the response) is this package. StaticHTTPUpstream (StaticUpstream for echo) is the whole
 // implementation for a deployment in front of a single database; a multi-tenant
 // platform's version is much larger, and that asymmetry is the point.
 //
