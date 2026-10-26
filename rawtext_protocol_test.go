@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -121,8 +122,18 @@ func TestConformance_RawTextOutput_BatchItemEndingInLineComment(t *testing.T) {
 
 // newGovernedConformanceServer serves /sql the way the proxy does for a session
 // it may govern by policy: raw-text requests stay on the simple protocol, with
-// count standing in for the proxy's PostgreSQL parser.
-func newGovernedConformanceServer(pg *pgfake.PG, count func(string) (int, error)) *echo.Echo {
+// count standing in for the proxy's PostgreSQL parser. It serves through
+// NewHTTPHandler when PGSERVERLESS_TEST_STDLIB is true.
+func newGovernedConformanceServer(pg *pgfake.PG, count func(string) (int, error)) http.Handler {
+	if os.Getenv("PGSERVERLESS_TEST_STDLIB") == "true" {
+		static := StaticHTTPUpstream(pg.Addr())
+		return NewHTTPHandler(func(r *http.Request) (Upstream, error) {
+			up, err := static(r)
+			up.InsecureSkipVerify = true
+			up.RawTextSimpleProtocol = true
+			return up, err
+		}, WithHTTPStatementCounter(count))
+	}
 	e := echo.New()
 	static := StaticUpstream(pg.Addr())
 	NewHandler(func(c echo.Context) (Upstream, error) {
