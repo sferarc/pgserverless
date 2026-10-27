@@ -1,7 +1,6 @@
 package pgserverless
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -326,11 +325,10 @@ func TestConformance_MultiDimensionalArray_NullElement(t *testing.T) {
 	assert.JSONEq(t, `[[1,null],[3,4]]`, string(rows[0]["a"]))
 }
 
-// A record column keeps its own shape. It decodes to a []any exactly as an
-// array does, and its bytes parse as a two-dimensional array header whose
-// dimensions come out of the first field's data, so before the codec gate this
-// row came back as [["AAAAAgAAAAAAAAAB"],[7]]. The dimensions were read from
-// user data, so nothing had to be crafted for it to fire.
+// A record column is never reshaped. Its bytes parse as a two-dimensional
+// array header whose dimensions come out of the first field's data, so before
+// the codec gate this row came back as [["AAAAAgAAAAAAAAAB"],[7]]. It now comes
+// back as PostgreSQL's record text, as Neon returns it.
 func TestConformance_RecordColumnNotReshaped(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT r FROM t", pgfake.Result{
@@ -340,8 +338,7 @@ func TestConformance_RecordColumnNotReshaped(t *testing.T) {
 	})
 
 	rows := rowsJSON(t, pg, "SELECT r FROM t")
-	blob := base64.StdEncoding.EncodeToString([]byte{0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1})
-	assert.JSONEq(t, `["`+blob+`",7]`, string(rows[0]["r"]))
+	assert.JSONEq(t, `"(\"\\\\x000000020000000000000001\",7)"`, string(rows[0]["r"]))
 }
 
 // A one-dimensional array is unchanged. The reshape reads the dimension count

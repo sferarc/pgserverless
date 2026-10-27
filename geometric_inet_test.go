@@ -95,6 +95,14 @@ func TestConformance_GeometricAndTSVectorAsText(t *testing.T) {
 			`"'a b':1"`,
 		},
 		{
+			"tsvector with a quote in the lexeme", oidTSVector,
+			pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{{
+				Word:      "it's",
+				Positions: []pgtype.TSVectorPosition{{Position: 1, Weight: pgtype.TSVectorWeightD}},
+			}}, Valid: true},
+			`"'it''s':1"`,
+		},
+		{
 			"empty tsvector", oidTSVector,
 			pgtype.TSVector{Valid: true},
 			`""`,
@@ -432,7 +440,8 @@ func TestInetHostText(t *testing.T) {
 
 // The nil type map, which is the contract pgTextValue has always held for the
 // types it covers: without a map they pass through unchanged rather than the
-// call failing or the column being dropped.
+// call failing or the column being dropped. tsvector is rendered by tsvectorText,
+// which needs no map, so it is coerced either way.
 func TestCoerceNeonValue_GeometricWithoutATypeMap(t *testing.T) {
 	m := pgtype.NewMap()
 	lseg := pgtype.Lseg{P: [2]pgtype.Vec2{{X: 1, Y: 2}, {X: 3, Y: 4}}, Valid: true}
@@ -445,27 +454,58 @@ func TestCoerceNeonValue_GeometricWithoutATypeMap(t *testing.T) {
 	assert.Equal(t, any("'a':1"), coerceNeonValue(m, tsv, oidTSVector))
 
 	assert.Equal(t, any(lseg), coerceNeonValue(nil, lseg, oidLseg))
-	assert.Equal(t, any(tsv), coerceNeonValue(nil, tsv, oidTSVector))
+	assert.Equal(t, any("'a':1"), coerceNeonValue(nil, tsv, oidTSVector))
 }
 
-// pgx spells a tsvector lexeme containing a single quote with a backslash where
-// PostgreSQL doubles the quote. Both parse back to the same lexeme and both are
-// better than the struct this replaces, but it is a divergence and it is pinned
-// here rather than left for someone to discover. An embedded backslash agrees:
-// PostgreSQL doubles it and so does pgx.
-func TestTSVectorQuoteEscapeDivergesFromPostgres(t *testing.T) {
-	m := pgtype.NewMap()
+// A tsvector lexeme is spelled the way PostgreSQL's tsvectorout spells it: an
+// embedded quote and an embedded backslash are both doubled. pgx's own encode
+// backslash-escapes the quote, which parses back to the same lexeme but is not
+// the text PostgreSQL, and so @neondatabase/serverless, returns.
+//
+// Each expected string with a SELECT above it was read off a real PostgreSQL
+// 17.11 as the text output of that literal.
+func TestTSVectorTextMatchesPostgres(t *testing.T) {
+	lexeme := func(word string, positions ...pgtype.TSVectorPosition) pgtype.TSVectorLexeme {
+		return pgtype.TSVectorLexeme{Word: word, Positions: positions}
+	}
+	pos := func(n uint16, w pgtype.TSVectorWeight) pgtype.TSVectorPosition {
+		return pgtype.TSVectorPosition{Position: n, Weight: w}
+	}
 
-	quote := pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{{
-		Word:      "c'd",
-		Positions: []pgtype.TSVectorPosition{{Position: 2, Weight: pgtype.TSVectorWeightD}},
-	}}, Valid: true}
-	// PostgreSQL 17.11 prints 'c''d':2 for this value.
-	assert.Equal(t, any(`'c\'d':2`), coerceNeonValue(m, quote, oidTSVector))
+	for _, tc := range []struct {
+		name string
+		in   any
+		want string
+		ok   bool
+	}{
+		// SELECT $$'c''d':2$$::tsvector
+		{"quote", pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{lexeme("c'd", pos(2, pgtype.TSVectorWeightD))}, Valid: true}, `'c''d':2`, true},
+		// SELECT $$'c\\d':2$$::tsvector
+		{"backslash", pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{lexeme(`c\d`, pos(2, pgtype.TSVectorWeightD))}, Valid: true}, `'c\\d':2`, true},
+		// SELECT $$'it''s' 'a\\''b':1A,3$$::tsvector
+		{
+			"quote and backslash across lexemes",
+			pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{
+				lexeme(`a\'b`, pos(1, pgtype.TSVectorWeightA), pos(3, pgtype.TSVectorWeightD)),
+				lexeme("it's"),
+			}, Valid: true},
+			`'a\\''b':1A,3 'it''s'`, true,
+		},
+		{"no positions", pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{lexeme("a")}, Valid: true}, `'a'`, true},
+		{"unset weight is D", pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{lexeme("a", pos(1, 0))}, Valid: true}, `'a':1`, true},
+		{"empty", pgtype.TSVector{Valid: true}, ``, true},
+		{"invalid", pgtype.TSVector{}, ``, false},
+		{"already text", "'a':1", ``, false},
+		{"nil", nil, ``, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := tsvectorText(tc.in)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 
-	backslash := pgtype.TSVector{Lexemes: []pgtype.TSVectorLexeme{{
-		Word:      `c\d`,
-		Positions: []pgtype.TSVectorPosition{{Position: 2, Weight: pgtype.TSVectorWeightD}},
-	}}, Valid: true}
-	assert.Equal(t, any(`'c\\d':2`), coerceNeonValue(m, backslash, oidTSVector))
+	// Text that already arrived as a string (the simple protocol) is left exactly
+	// as it came, however it is escaped.
+	assert.Equal(t, any(`'c\'d':2`), coerceNeonValue(pgtype.NewMap(), `'c\'d':2`, oidTSVector))
 }

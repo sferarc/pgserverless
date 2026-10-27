@@ -188,12 +188,52 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		}
 	case oidBytea, oidXML, oidDate, oidTime, oidInterval,
 		oidMacaddr, oidMacaddr8, oidBit, oidVarbit,
-		oidLseg, oidPath, oidBox, oidPolygon, oidLine, oidCircle, oidTSVector:
+		oidLseg, oidPath, oidBox, oidPolygon, oidLine, oidCircle:
+		if s, ok := pgTextValue(m, v, typeOID); ok {
+			return s
+		}
+	case oidTSVector:
+		if s, ok := tsvectorText(v); ok {
+			return s
+		}
 		if s, ok := pgTextValue(m, v, typeOID); ok {
 			return s
 		}
 	}
 	return v
+}
+
+// tsvectorLexemeEscaper doubles a quote and a backslash inside a lexeme, as
+// PostgreSQL's tsvectorout does. pgx's own text encode backslash-escapes the
+// quote instead, so "c'd" came back as 'c\'d' where PostgreSQL doubles the quote.
+var tsvectorLexemeEscaper = strings.NewReplacer(`'`, `''`, `\`, `\\`)
+
+// tsvectorText renders a pgx-decoded tsvector in PostgreSQL's own spelling,
+// reporting false for anything that is not a valid pgtype.TSVector. It needs no
+// type map, so a tsvector is rendered even when the caller has none.
+func tsvectorText(v any) (string, bool) {
+	tsv, ok := v.(pgtype.TSVector)
+	if !ok || !tsv.Valid {
+		return "", false
+	}
+	var b strings.Builder
+	for i, lex := range tsv.Lexemes {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteByte('\'')
+		b.WriteString(tsvectorLexemeEscaper.Replace(lex.Word))
+		b.WriteByte('\'')
+		for j, p := range lex.Positions {
+			if j == 0 {
+				b.WriteByte(':')
+			} else {
+				b.WriteByte(',')
+			}
+			b.WriteString(p.String())
+		}
+	}
+	return b.String(), true
 }
 
 // inetHostText renders an inet that addresses a single host as the bare address,
@@ -258,13 +298,12 @@ func inetHostText(v any) (string, bool) {
 // the pre-existing shape is wrong but it is not lossy, and dropping the column
 // would be.
 //
-// The rendering is pgx's rather than the server's, and for three of these types
+// The rendering is pgx's rather than the server's, and for two of these types
 // pgx spells the same value slightly differently: time always carries six
-// fractional digits ("12:34:56.000000" where PostgreSQL prints "12:34:56"),
+// fractional digits ("12:34:56.000000" where PostgreSQL prints "12:34:56"), and
 // interval always carries a time part ("1 day 00:00:00" where PostgreSQL prints
-// "1 day"), and a tsvector lexeme containing a single quote is escaped with a
-// backslash ("'c\'d':2" where PostgreSQL doubles it, "'c”d':2"). All parse back
-// to the same value.
+// "1 day"). Both parse back to the same value. tsvector, which pgx also spells
+// differently, is rendered by tsvectorText first.
 func pgTextValue(m *pgtype.Map, v any, typeOID uint32) (string, bool) {
 	if s, ok := v.(string); ok {
 		return s, true

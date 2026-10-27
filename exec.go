@@ -234,6 +234,12 @@ func rowValues(rows pgx.Rows, descs []pgconn.FieldDescription, m *pgtype.Map, ra
 	// many dimensions it had (see reshapeArrayValue).
 	raw := rows.RawValues()
 	for i, d := range descs {
+		if i < len(raw) {
+			if v, ok := recordColumnValue(m, raw[i], d.DataTypeOID, d.Format); ok {
+				values[i] = v
+				continue
+			}
+		}
 		values[i] = coerceNeonValue(m, values[i], d.DataTypeOID)
 		if i < len(raw) {
 			values[i] = reshapeArrayValue(m, values[i], raw[i], d.DataTypeOID, d.Format)
