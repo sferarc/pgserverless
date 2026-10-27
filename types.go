@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -76,9 +77,10 @@ const (
 	oidTimestamptzArray uint32 = 1185
 
 	// The geometric types and tsvector. pgx decodes each to a pgtype struct that
-	// marshals as a JSON object of pgtype's own field names. point is absent on
-	// purpose: pgtype.Point carries its own MarshalJSON and already returns
-	// "(1,2)". See pgTextValue.
+	// marshals as a JSON object of pgtype's own field names, except point, whose
+	// MarshalJSON prints %g. See geometryText.
+	oidPoint         uint32 = 600
+	oidPointArray    uint32 = 1017
 	oidLseg          uint32 = 601
 	oidPath          uint32 = 602
 	oidBox           uint32 = 603
@@ -207,6 +209,10 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		if s, ok := catalogIDText(v); ok {
 			return s
 		}
+	case oidTimestamp, oidTimestamptz:
+		if s, ok := expandedYearTimestamp(v); ok {
+			return s
+		}
 	case oidQChar:
 		if s, ok := qcharText(v); ok {
 			return s
@@ -220,9 +226,12 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		}
 	case oidTID, oidXID8,
 		oidBytea, oidXML, oidDate,
-		oidMacaddr, oidMacaddr8, oidBit, oidVarbit,
-		oidLseg, oidPath, oidBox, oidPolygon, oidLine, oidCircle:
+		oidMacaddr, oidMacaddr8, oidBit, oidVarbit:
 		if s, ok := pgTextValue(m, v, typeOID); ok {
+			return s
+		}
+	case oidPoint, oidLseg, oidPath, oidBox, oidPolygon, oidLine, oidCircle:
+		if s, ok := geometryText(v); ok {
 			return s
 		}
 	case oidTSVector:
@@ -617,6 +626,8 @@ func neonArrayElemOID(arrayOID uint32) (uint32, bool) {
 		return oidTimestamp, true
 	case oidTimestamptzArray:
 		return oidTimestamptz, true
+	case oidPointArray:
+		return oidPoint, true
 	case oidLsegArray:
 		return oidLseg, true
 	case oidPathArray:
@@ -853,6 +864,25 @@ func infinityText(v any) (string, bool) {
 		return "", false
 	}
 	return im.String(), true
+}
+
+// expandedYearTimestamp spells a finite timestamp whose year encoding/json
+// refuses. time.Time marshals only years 0 to 9999, and PostgreSQL holds
+// timestamps from 4713 BC to 294276 AD, so a single row dated before 1 BC or
+// after 9999 failed the whole response, as a non-finite float used to. The
+// value is written in the ISO 8601 expanded form JavaScript's Date reads, a sign
+// and six year digits, so the column keeps the RFC 3339 shape its other rows
+// have. Years 0 to 9999 report false and keep encoding/json's own spelling.
+func expandedYearTimestamp(v any) (string, bool) {
+	t, ok := v.(time.Time)
+	if !ok {
+		return "", false
+	}
+	year := t.Year()
+	if year >= 0 && year <= 9999 {
+		return "", false
+	}
+	return fmt.Sprintf("%+07d", year) + t.Format("-01-02T15:04:05.999999999Z07:00"), true
 }
 
 // qcharText renders a "char" the way PostgreSQL 15 and later print it: the
@@ -1145,7 +1175,8 @@ func convertArrayElem(s string, elemTypeOID uint32, wasQuoted bool) any {
 }
 
 // ConvertParams converts query parameters for pgx. Slices are formatted
-// as PG array literals, floats as number text, maps/structs are JSON-encoded.
+// as PG array literals, floats as number text, bools as true or false, and
+// maps/structs are JSON-encoded.
 func ConvertParams(params []any) []any {
 	if len(params) == 0 {
 		return params
@@ -1160,6 +1191,9 @@ func ConvertParams(params []any) []any {
 			out[i] = formatPgFloat(v, 64)
 		case float32:
 			out[i] = formatPgFloat(float64(v), 32)
+		case bool:
+			// pgx cannot encode a Go bool into a text or integer parameter, and raw text mode bound it as "t".
+			out[i] = strconv.FormatBool(v)
 		case map[string]any:
 			b, err := json.Marshal(v)
 			if err != nil {

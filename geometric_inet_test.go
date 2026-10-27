@@ -2,6 +2,7 @@ package pgserverless
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/netip"
 	"testing"
@@ -41,6 +42,13 @@ func TestConformance_GeometricAndTSVectorAsText(t *testing.T) {
 			"box", oidBox,
 			pgtype.Box{P: [2]pgtype.Vec2{{X: 3, Y: 4}, {X: 1, Y: 2}}, Valid: true},
 			`"(3,4),(1,2)"`,
+		},
+		{
+			// float8out switches to exponent form outside 1e-4 to 1e15 and spells
+			// infinity out; pgx printed 100000000000000000000 and +Inf.
+			"box with exponent and infinite corners", oidBox,
+			pgtype.Box{P: [2]pgtype.Vec2{{X: math.Inf(1), Y: 1e20}, {X: 0, Y: 1e-5}}, Valid: true},
+			`"(Infinity,1e+20),(0,1e-05)"`,
 		},
 		{
 			"closed path", oidPath,
@@ -130,29 +138,34 @@ func TestConformance_GeometricAndTSVectorAsText(t *testing.T) {
 	}
 }
 
-// point is deliberately untouched: pgtype.Point carries its own MarshalJSON and
-// has always returned PostgreSQL's spelling. This pins that, so nobody adds it
-// to the coercion switch on the assumption that the whole geometric family was
-// broken.
-func TestConformance_PointWasAlreadyCorrect(t *testing.T) {
-	const oidPoint uint32 = 600
+// point used to be left to pgtype.Point's own MarshalJSON, which prints %g:
+// right for (1,2) but 1.234567e+06 where PostgreSQL prints 1234567, and +Inf
+// where it prints Infinity. Expected strings are read off PostgreSQL 17.11.
+func TestConformance_PointSpelledLikePostgres(t *testing.T) {
+	pt := func(x, y float64) pgtype.Point { return pgtype.Point{P: pgtype.Vec2{X: x, Y: y}, Valid: true} }
 	pg := pgfake.New(t)
-	pg.SetResult("SELECT c FROM t", pgfake.Result{
-		Cols: []pgfake.Col{{Name: "c", TypeOID: oidPoint}},
-		Rows: [][]any{{pgtype.Point{P: pgtype.Vec2{X: 1, Y: 2}, Valid: true}}},
-		Tag:  "SELECT 1",
+	pg.SetResult("SELECT c, a FROM t", pgfake.Result{
+		Cols: []pgfake.Col{{Name: "c", TypeOID: oidPoint}, {Name: "a", TypeOID: oidPointArray}},
+		Rows: [][]any{
+			{pt(1, 2), []pgtype.Point{pt(1e20, 1), pt(1234567, 2)}},
+			{pt(1234567, 0.00001), []pgtype.Point{pt(math.Inf(1), math.Inf(-1))}},
+		},
+		Tag: "SELECT 2",
 	})
 	e := newConformanceServer(t, pg)
 
-	rec := doSQL(e, `{"query":"SELECT c FROM t"}`, nil)
+	rec := doSQL(e, `{"query":"SELECT c, a FROM t"}`, nil)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	var raw map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
 	var rows []map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(raw["rows"], &rows))
-	require.Len(t, rows, 1)
+	require.Len(t, rows, 2)
 	assert.JSONEq(t, `"(1,2)"`, string(rows[0]["c"]))
+	assert.JSONEq(t, `["(1e+20,1)","(1234567,2)"]`, string(rows[0]["a"]))
+	assert.JSONEq(t, `"(1234567,1e-05)"`, string(rows[1]["c"]))
+	assert.JSONEq(t, `["(Infinity,-Infinity)"]`, string(rows[1]["a"]))
 }
 
 // An inet that addresses a single host is printed by PostgreSQL without a
@@ -438,10 +451,8 @@ func TestInetHostText(t *testing.T) {
 	assert.Equal(t, any(netip.MustParsePrefix("10.0.0.0/8")), coerceNeonValue(nil, netip.MustParsePrefix("10.0.0.0/8"), oidInet))
 }
 
-// The nil type map, which is the contract pgTextValue has always held for the
-// types it covers: without a map they pass through unchanged rather than the
-// call failing or the column being dropped. tsvector is rendered by tsvectorText,
-// which needs no map, so it is coerced either way.
+// The geometric types and tsvector are rendered without the type map, by
+// geometryText and tsvectorText, so a nil map coerces them all the same.
 func TestCoerceNeonValue_GeometricWithoutATypeMap(t *testing.T) {
 	m := pgtype.NewMap()
 	lseg := pgtype.Lseg{P: [2]pgtype.Vec2{{X: 1, Y: 2}, {X: 3, Y: 4}}, Valid: true}
@@ -453,7 +464,7 @@ func TestCoerceNeonValue_GeometricWithoutATypeMap(t *testing.T) {
 	assert.Equal(t, any("[(1,2),(3,4)]"), coerceNeonValue(m, lseg, oidLseg))
 	assert.Equal(t, any("'a':1"), coerceNeonValue(m, tsv, oidTSVector))
 
-	assert.Equal(t, any(lseg), coerceNeonValue(nil, lseg, oidLseg))
+	assert.Equal(t, any("[(1,2),(3,4)]"), coerceNeonValue(nil, lseg, oidLseg))
 	assert.Equal(t, any("'a':1"), coerceNeonValue(nil, tsv, oidTSVector))
 }
 

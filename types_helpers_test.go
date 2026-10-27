@@ -112,6 +112,7 @@ func TestNeonArrayElemOIDMapsEveryListedArray(t *testing.T) {
 		oidFloat8Array:      oidFloat8,
 		oidTimestampArray:   oidTimestamp,
 		oidTimestamptzArray: oidTimestamptz,
+		oidPointArray:       oidPoint,
 		oidLsegArray:        oidLseg,
 		oidPathArray:        oidPath,
 		oidBoxArray:         oidBox,
@@ -134,5 +135,5 @@ func TestConvertParamsScalarsAndEmpty(t *testing.T) {
 	assert.Equal(t, []any{}, ConvertParams([]any{}))
 
 	got := ConvertParams([]any{"s", 1.5, nil, true, []any{"a"}, map[string]any{"k": 1.0}})
-	assert.Equal(t, []any{"s", "1.5", nil, true, `{a}`, `{"k":1}`}, got)
+	assert.Equal(t, []any{"s", "1.5", nil, "true", `{a}`, `{"k":1}`}, got)
 }
