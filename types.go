@@ -100,6 +100,15 @@ const (
 	oidInet      uint32 = 869
 	oidInetArray uint32 = 1041
 
+	// oid, xid and cid, which pgx decodes to a uint32 and so marshals as a JSON
+	// number. Neon's server emits only int2 and int4 as numbers. See catalogIDText.
+	oidOID      uint32 = 26
+	oidXID      uint32 = 28
+	oidCID      uint32 = 29
+	oidOIDArray uint32 = 1028
+	oidXIDArray uint32 = 1011
+	oidCIDArray uint32 = 1012
+
 	// "char", tid and xid8, which the system catalogs and ctid return. pgx
 	// decodes "char" to a rune, tid to pgtype.TID and xid8 to a uint64, so they
 	// marshal as a number, a struct and a number past 2^53. See qcharText.
@@ -194,6 +203,10 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		if s, ok := inetHostText(v); ok {
 			return s
 		}
+	case oidOID, oidXID, oidCID:
+		if s, ok := catalogIDText(v); ok {
+			return s
+		}
 	case oidQChar:
 		if s, ok := qcharText(v); ok {
 			return s
@@ -281,6 +294,21 @@ func inetHostText(v any) (string, bool) {
 		return "", false
 	}
 	return p.Addr().String(), true
+}
+
+// catalogIDText renders an oid, xid or cid as its decimal text. pgx decodes all
+// three to a uint32, which encoding/json writes as a number, but Neon's server
+// emits a number only for int2 and int4 and returns every other scalar as its
+// PostgreSQL text, so pg_class.oid 1259 arrived as 1259 where Neon says "1259".
+// No value is lost either way; the shape is what a client keyed on Neon's
+// output reads, and it keeps oid in step with regclass, which pgx has no codec
+// for and so already arrives as text.
+func catalogIDText(v any) (string, bool) {
+	n, ok := v.(uint32)
+	if !ok {
+		return "", false
+	}
+	return strconv.FormatUint(uint64(n), 10), true
 }
 
 // pgTextValue renders a pgx-decoded value back to PostgreSQL's text format
@@ -605,6 +633,12 @@ func neonArrayElemOID(arrayOID uint32) (uint32, bool) {
 		return oidTSVector, true
 	case oidInetArray:
 		return oidInet, true
+	case oidOIDArray:
+		return oidOID, true
+	case oidXIDArray:
+		return oidXID, true
+	case oidCIDArray:
+		return oidCID, true
 	case oidQCharArray:
 		return oidQChar, true
 	case oidTIDArray:
