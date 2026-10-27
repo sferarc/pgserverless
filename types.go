@@ -99,6 +99,16 @@ const (
 	// PostgreSQL always prints its netmask, so pgx's spelling already matches.
 	oidInet      uint32 = 869
 	oidInetArray uint32 = 1041
+
+	// "char", tid and xid8, which the system catalogs and ctid return. pgx
+	// decodes "char" to a rune, tid to pgtype.TID and xid8 to a uint64, so they
+	// marshal as a number, a struct and a number past 2^53. See qcharText.
+	oidQChar      uint32 = 18
+	oidQCharArray uint32 = 1002
+	oidTID        uint32 = 27
+	oidTIDArray   uint32 = 1010
+	oidXID8       uint32 = 5069
+	oidXID8Array  uint32 = 271
 )
 
 // coerceNeonValue post-processes a pgx-decoded value so the JSON it serializes
@@ -186,6 +196,10 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		if s, ok := inetHostText(v); ok {
 			return s
 		}
+	case oidQChar:
+		if s, ok := qcharText(v); ok {
+			return s
+		}
 	case oidTime, oidInterval:
 		if s, ok := clockText(v); ok {
 			return s
@@ -193,7 +207,8 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		if s, ok := pgTextValue(m, v, typeOID); ok {
 			return s
 		}
-	case oidBytea, oidXML, oidDate,
+	case oidTID, oidXID8,
+		oidBytea, oidXML, oidDate,
 		oidMacaddr, oidMacaddr8, oidBit, oidVarbit,
 		oidLseg, oidPath, oidBox, oidPolygon, oidLine, oidCircle:
 		if s, ok := pgTextValue(m, v, typeOID); ok {
@@ -296,6 +311,11 @@ func inetHostText(v any) (string, bool) {
 //	               whose Weight is the ASCII code of the weight letter, so 'a':1
 //	               arrived as {"Lexemes":[{"Word":"a","Positions":[{"Position":1,
 //	               "Weight":68}]}],"Valid":true}
+//	tid            decodes to pgtype.TID, so a ctid arrived as
+//	               {"BlockNumber":0,"OffsetNumber":1,"Valid":true} rather than
+//	               as (0,1)
+//	xid8           decodes to a uint64 and marshals as a JSON number, which a
+//	               JavaScript client reads as a float64: int8's precision loss
 //
 // A value that already arrived as a string (a type pgx has no codec for, such
 // as timetz, or the simple protocol) is PostgreSQL text already and is returned
@@ -587,6 +607,12 @@ func neonArrayElemOID(arrayOID uint32) (uint32, bool) {
 		return oidTSVector, true
 	case oidInetArray:
 		return oidInet, true
+	case oidQCharArray:
+		return oidQChar, true
+	case oidTIDArray:
+		return oidTID, true
+	case oidXID8Array:
+		return oidXID8, true
 	}
 	return 0, false
 }
@@ -795,6 +821,26 @@ func infinityText(v any) (string, bool) {
 		return "", false
 	}
 	return im.String(), true
+}
+
+// qcharText renders a "char" the way PostgreSQL 15 and later print it: the
+// character itself, the empty string for the zero byte, and a backslash and
+// three octal digits for a byte with the high bit set. pgx decodes "char" to a
+// rune, which encoding/json writes as a number, so pg_class.relkind 'r' reached
+// the client as 114. pgTextValue would not do: pgx writes the raw byte, which is
+// not valid UTF-8 above 0x7f.
+func qcharText(v any) (string, bool) {
+	r, ok := v.(rune)
+	if !ok || r < 0 || r > math.MaxUint8 {
+		return "", false
+	}
+	switch {
+	case r == 0:
+		return "", true
+	case r >= 0x80:
+		return fmt.Sprintf(`\%03o`, r), true
+	}
+	return string(r), true
 }
 
 // uuidString renders a pgx-decoded uuid as the canonical dashed text
