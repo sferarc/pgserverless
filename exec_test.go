@@ -105,6 +105,37 @@ func TestBatchAtTheLimitRuns(t *testing.T) {
 	assert.Len(t, out.Results, MaxBatchQueries)
 }
 
+// paddedBody left-pads query JSON with whitespace, which the decoder skips, to exactly n bytes.
+func paddedBody(n int) string {
+	const body = `{"query":"SELECT 1 AS n"}`
+	return strings.Repeat(" ", n-len(body)) + body
+}
+
+func TestBodyOverTheLimitIsRejectedBeforeDialing(t *testing.T) {
+	// No backend is running: a dial would surface as a 504, not a 413.
+	for name, h := range map[string]http.Handler{
+		"echo":     newEchoServer(StaticUpstream("127.0.0.1:1")),
+		"net/http": NewHTTPHandler(StaticHTTPUpstream("127.0.0.1:1")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := doSQL(h, paddedBody(MaxRequestBodyBytes+1), nil)
+
+			require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+			assert.Equal(t, fmt.Sprintf("request is too large (max is %d bytes)", MaxRequestBodyBytes), decodeError(t, rec).Message)
+		})
+	}
+}
+
+func TestBodyAtTheLimitRuns(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT 1 AS n", oneInt(1))
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, paddedBody(MaxRequestBodyBytes), nil)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
 func TestParameterCountMismatchIsAProtocolViolation(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT $1::int AS n", oneInt(1))

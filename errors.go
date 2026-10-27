@@ -20,6 +20,7 @@ var (
 	ErrMissingConnectionString = errors.New("Connection-String header is required")
 	ErrInvalidConnectionString = errors.New("invalid connection string")
 	ErrResponseTooLarge        = errors.New("response too large")
+	ErrRequestTooLarge         = errors.New("request is too large")
 )
 
 var keywordPassword = regexp.MustCompile(`(?i)(^|[\s,;:(\[{\x60'"])(ssl)?password\s*=`)

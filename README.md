@@ -161,6 +161,7 @@ Everything after that decision (parse the body, dial, run, coerce, encode) is th
 - A WebSocket `CancelRequest` is ignored. Cancellation arrives on a second connection that a scaled-out deployment may route elsewhere.
 - The tunnel does not check the `Origin` header. `Admission` is the authentication point.
 - The tunnel bounds only the upstream dial (10 seconds). An open session has no time limit.
+- A `POST /sql` body over `MaxRequestBodyBytes` (10 MiB, Neon's default) is refused with 413 and `request is too large (max is 10485760 bytes)`, before the upstream is dialed.
 - Responses are not size-capped by this package. Bound result sizes in the database or in front of the server.
 - SCRAM databases need `neonConfig.pipelineConnect = false` on the client. The driver's default pipelining assumes a cleartext password request and hangs otherwise.
 

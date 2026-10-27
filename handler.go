@@ -26,6 +26,11 @@ const MaxBatchQueries = 100
 // QueryTimeout bounds a single request's execution.
 const QueryTimeout = 30 * time.Second
 
+// MaxRequestBodyBytes is the largest POST /sql body the handler reads, Neon's
+// default of 10 MiB. A larger body is refused with 413 before the upstream is
+// dialed.
+const MaxRequestBodyBytes = 10 << 20
+
 // Upstream says where a request's query should run and as whom. An Admission
 // returns one once it has decided the request may proceed.
 type Upstream struct {
@@ -229,6 +234,8 @@ func (h *Handler) dialErrorFor(c echo.Context) func(error) {
 
 // serveSQL is the transport-independent core of POST /sql.
 func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error)) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+
 	up, aerr := admit()
 	if aerr != nil {
 		writeAdmissionError(w, aerr)
@@ -237,7 +244,11 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 
 	req, rerr := decodeSQLRequest(r)
 	if rerr != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Message: rerr.Error()})
+		status := http.StatusBadRequest
+		if errors.Is(rerr, ErrRequestTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeJSON(w, status, ErrorResponse{Message: rerr.Error()})
 		return
 	}
 
@@ -320,6 +331,9 @@ func writeAdmissionError(w http.ResponseWriter, err error) {
 func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 	var req SQLRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			return nil, fmt.Errorf("%w (max is %d bytes)", ErrRequestTooLarge, MaxRequestBodyBytes)
+		}
 		return nil, ErrInvalidRequest
 	}
 
