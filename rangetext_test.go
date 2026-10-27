@@ -133,10 +133,8 @@ func TestConformance_RangeAsText(t *testing.T) {
 			want: `"[\"2024-01-01 00:00:00\",\"2024-01-02 00:00:00\")"`,
 		},
 		{
-			// pgx normalizes a timestamptz to UTC and spells the offset "Z"
-			// where PostgreSQL prints "+00", so this is stable whatever zone
-			// the client runs in. The divergence is the one already recorded
-			// for the other pgTextValue types.
+			// pgx normalizes a timestamptz to UTC and spells the offset "Z";
+			// the bound is respelled "+00" as a UTC session prints it.
 			name:    "tstzrange",
 			typeOID: oidTstzRange,
 			value: pgtype.Range[pgtype.Timestamptz]{
@@ -146,7 +144,20 @@ func TestConformance_RangeAsText(t *testing.T) {
 				UpperType: pgtype.Exclusive,
 				Valid:     true,
 			},
-			want: `"[\"2024-01-01 00:00:00Z\",\"2024-01-02 00:00:00Z\")"`,
+			want: `"[\"2024-01-01 00:00:00+00\",\"2024-01-02 00:00:00+00\")"`,
+		},
+		{
+			// A zone other than UTC reaches the bound as the same instant at +00.
+			name:    "tstzrange with fractional seconds, a non-UTC zone and an infinite bound",
+			typeOID: oidTstzRange,
+			value: pgtype.Range[pgtype.Timestamptz]{
+				Lower:     pgtype.Timestamptz{Time: time.Date(2024, 1, 1, 2, 0, 0, 500000000, time.FixedZone("", 2*60*60)), Valid: true},
+				Upper:     pgtype.Timestamptz{InfinityModifier: pgtype.Infinity, Valid: true},
+				LowerType: pgtype.Inclusive,
+				UpperType: pgtype.Exclusive,
+				Valid:     true,
+			},
+			want: `"[\"2024-01-01 00:00:00.5+00\",infinity)"`,
 		},
 		{
 			name:    "an unbounded lower bound is empty, not quoted",
@@ -442,4 +453,17 @@ func firstColumn(t *testing.T, body []byte, name string) string {
 	require.NoError(t, json.Unmarshal(raw["rows"], &rows))
 	require.Len(t, rows, 1)
 	return string(rows[0][name])
+}
+
+func TestUTCOffsetText(t *testing.T) {
+	tests := map[string]string{
+		"2024-01-01 00:00:00Z":    "2024-01-01 00:00:00+00",
+		"2024-01-01 00:00:00.5Z":  "2024-01-01 00:00:00.5+00",
+		"0044-03-15 12:00:00Z BC": "0044-03-15 12:00:00+00 BC",
+		"infinity":                "infinity",
+		"2024-01-01 00:00:00+00":  "2024-01-01 00:00:00+00",
+	}
+	for in, want := range tests {
+		assert.Equal(t, want, utcOffsetText(in), in)
+	}
 }

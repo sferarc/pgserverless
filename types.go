@@ -439,7 +439,22 @@ func rangeBoundText(m *pgtype.Map, bound any, boundType pgtype.BoundType, elemOI
 	if !ok {
 		return "", false
 	}
+	if elemOID == pgtype.TimestamptzOID {
+		s = utcOffsetText(s)
+	}
 	return quoteRangeBound(s), true
+}
+
+// utcOffsetText respells the "Z" pgx writes after a UTC timestamptz as the
+// "+00" timestamptz_out prints in a UTC session, keeping a trailing " BC".
+func utcOffsetText(s string) string {
+	if rest, ok := strings.CutSuffix(s, "Z BC"); ok {
+		return rest + "+00 BC"
+	}
+	if rest, ok := strings.CutSuffix(s, "Z"); ok {
+		return rest + "+00"
+	}
+	return s
 }
 
 // rangeElemOID reports the element type OID of a range type, and
