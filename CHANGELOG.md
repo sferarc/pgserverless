@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- 095275f: `"char"`, `tid` and `xid8` columns, and their arrays, are returned as PostgreSQL text on the JSON path. `pg_class.relkind` used to arrive as the number `114` instead of `"r"`, a `ctid` as a JSON object instead of `"(0,1)"`, and an `xid8` as a number that loses precision past 2^53.
+- af8b79b: Without `Neon-Raw-Text-Output`, `time` and `interval` values (and their arrays) are now spelled as PostgreSQL prints them under the default IntervalStyle: `12:34:56` instead of `12:34:56.000000`, `1 day` instead of `1 day 00:00:00`, `-1 days +02:00:00` for mixed signs, and `infinity` or `-infinity` for PostgreSQL 17's infinite intervals instead of raw field maxima.
+- 3f6ef2c: Without `Neon-Raw-Text-Output`, `tstzrange` and `tstzmultirange` bounds now carry the `+00` offset PostgreSQL prints in a UTC session instead of pgx's `Z`.
+
 ## 0.2.1
 
 ### Patch Changes

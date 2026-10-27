@@ -120,9 +120,10 @@ const (
 //
 // The same mismatch applies wherever pgx's Go type does not JSON-marshal to
 // PostgreSQL's own text: uuid decodes to [16]byte and would serialize as 16
-// numbers, and money[] has no pgx codec at all so it arrives as one raw array
-// literal string. Both are coerced back to what the driver returns, as are the
-// types listed in pgTextValue.
+// numbers, and money[] and the other arrays in codeclessArrayElemOID have no pgx
+// codec at all, so each arrives as one raw array literal string. All of them
+// are coerced back to what the driver returns, as are the types listed in
+// pgTextValue.
 //
 // float4/float8 are the one case where the mismatch is not a shape difference
 // but a hard marshal failure: NaN and the infinities are ordinary values of both
@@ -167,6 +168,11 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 	if s, ok := rangeTextValue(m, v, typeOID); ok {
 		return s
 	}
+	if elemOID, ok := codeclessArrayElemOID[typeOID]; ok {
+		if elems, ok := textArrayElems(v, elemOID); ok {
+			return elems
+		}
+	}
 	switch typeOID {
 	case oidInt8:
 		if n, ok := v.(int64); ok {
@@ -183,14 +189,6 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 	case oidUUID:
 		if s, ok := uuidString(v); ok {
 			return s
-		}
-	case oidMoneyArray:
-		if elems, ok := textArrayElems(v, oidMoney); ok {
-			return elems
-		}
-	case oidMacaddr8Array:
-		if elems, ok := textArrayElems(v, oidMacaddr8); ok {
-			return elems
 		}
 	case oidInet:
 		if s, ok := inetHostText(v); ok {
@@ -653,7 +651,7 @@ const pgMaxArrayDims = 6
 // fields. So the column's registered codec decides, and only a pgtype.ArrayCodec
 // is reshaped. Everything else is returned untouched: scalars, records,
 // one-dimensional arrays (already correct), the empty array, and the text-format
-// arrays pgx has no codec for (money[] and macaddr8[], which textArrayElems
+// arrays pgx has no codec for (codeclessArrayElemOID, which textArrayElems
 // already nests from the literal's own braces).
 //
 // The element OID the codec declares is checked against the one in the header as
@@ -861,8 +859,42 @@ func uuidString(v any) (string, bool) {
 	return s, ok
 }
 
-// textArrayElems splits an array column pgx has no codec for (money[], OID 791,
-// and macaddr8[], OID 775) into its elements. Such a column arrives as the raw
+// codeclessArrayElemOID maps each built-in array type pgx registers no codec
+// for to its element type. pgx requests such a column in text format and hands
+// it back as the array literal string, and Neon returns a JSON array of the
+// elements' text, since none of these element types is a number, a bool or
+// json. Every one uses the comma delimiter. An array of a user-defined type
+// (an enum, a domain) has an OID only the catalog knows, so it stays one string.
+var codeclessArrayElemOID = map[uint32]uint32{
+	oidMoneyArray:    oidMoney,
+	oidMacaddr8Array: oidMacaddr8,
+	1270:             1266, // timetz
+	2201:             1790, // refcursor
+	1008:             24,   // regproc
+	2207:             2202, // regprocedure
+	2208:             2203, // regoper
+	2209:             2204, // regoperator
+	2210:             2205, // regclass
+	2211:             2206, // regtype
+	3735:             3734, // regconfig
+	3770:             3769, // regdictionary
+	4090:             4089, // regnamespace
+	4097:             4096, // regrole
+	4192:             4191, // regcollation
+	2949:             2970, // txid_snapshot
+	5039:             5038, // pg_snapshot
+	3221:             3220, // pg_lsn
+	3645:             3615, // tsquery
+	6150:             4451, // int4multirange
+	6151:             4532, // nummultirange
+	6152:             4533, // tsmultirange
+	6153:             4534, // tstzmultirange
+	6155:             4535, // datemultirange
+	6157:             4536, // int8multirange
+}
+
+// textArrayElems splits an array column pgx has no codec for (see
+// codeclessArrayElemOID) into its elements. Such a column arrives as the raw
 // array literal string ("{$1.23,$2.34}") rather than as a slice, and the whole
 // array would otherwise serialize as one JSON string. Elements keep
 // PostgreSQL's own text, which is what the driver returns for the scalar type.
