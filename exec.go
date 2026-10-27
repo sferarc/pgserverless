@@ -225,7 +225,7 @@ func rowValues(rows pgx.Rows, descs []pgconn.FieldDescription, m *pgtype.Map, ra
 		return values, nil
 	}
 
-	values, err := rows.Values()
+	values, err := nativeRowValues(rows, descs, m)
 	if err != nil {
 		return nil, err
 	}
