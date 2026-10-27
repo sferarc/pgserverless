@@ -703,8 +703,8 @@ func TestConformance_TextRenderedTypes(t *testing.T) {
 		{"bytea", oidBytea, []byte{0x01, 0x02}, `"\\x0102"`},
 		{"xml", oidXML, []byte("<a/>"), `"<a/>"`},
 		{"date", oidDate, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), `"2024-01-01"`},
-		{"time", oidTime, pgtype.Time{Microseconds: 45296000000, Valid: true}, `"12:34:56.000000"`},
-		{"interval", oidInterval, pgtype.Interval{Days: 1, Valid: true}, `"1 day 00:00:00"`},
+		{"time", oidTime, pgtype.Time{Microseconds: 45296000000, Valid: true}, `"12:34:56"`},
+		{"interval", oidInterval, pgtype.Interval{Days: 1, Valid: true}, `"1 day"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

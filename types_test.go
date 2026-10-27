@@ -197,8 +197,8 @@ func TestCoerceNeonValue(t *testing.T) {
 
 		// pgx decodes time and interval to structs, which marshal as JSON
 		// objects leaking the pgtype field names into the response.
-		{"time is text, not a struct", pgtype.Time{Microseconds: 45296000000, Valid: true}, oidTime, "12:34:56.000000"},
-		{"interval is text, not a struct", pgtype.Interval{Days: 1, Valid: true}, oidInterval, "1 day 00:00:00"},
+		{"time is text, not a struct", pgtype.Time{Microseconds: 45296000000, Valid: true}, oidTime, "12:34:56"},
+		{"interval is text, not a struct", pgtype.Interval{Days: 1, Valid: true}, oidInterval, "1 day"},
 
 		// A value pgx has no codec for arrives as PostgreSQL text already.
 		{"already-text value is left alone", "12:34:56", oidTime, "12:34:56"},

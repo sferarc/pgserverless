@@ -186,7 +186,14 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		if s, ok := inetHostText(v); ok {
 			return s
 		}
-	case oidBytea, oidXML, oidDate, oidTime, oidInterval,
+	case oidTime, oidInterval:
+		if s, ok := clockText(v); ok {
+			return s
+		}
+		if s, ok := pgTextValue(m, v, typeOID); ok {
+			return s
+		}
+	case oidBytea, oidXML, oidDate,
 		oidMacaddr, oidMacaddr8, oidBit, oidVarbit,
 		oidLseg, oidPath, oidBox, oidPolygon, oidLine, oidCircle:
 		if s, ok := pgTextValue(m, v, typeOID); ok {
@@ -272,8 +279,6 @@ func inetHostText(v any) (string, bool) {
 //	               '\x0102' reaches the client as "AQI=" with nothing saying so
 //	date           decodes to time.Time and marshals as an RFC 3339 instant,
 //	               "2024-01-01T00:00:00Z" for a type that carries no time
-//	time, interval decode to pgtype structs and marshal as objects, leaking the
-//	               pgtype field names Microseconds and Valid into the response
 //	macaddr,       decode to net.HardwareAddr, which is a []byte with no
 //	macaddr8       MarshalJSON, so 08:00:2b:01:02:03 reaches the client as
 //	               "CAArAQID": bytea's failure mode on a short printable
@@ -298,12 +303,9 @@ func inetHostText(v any) (string, bool) {
 // the pre-existing shape is wrong but it is not lossy, and dropping the column
 // would be.
 //
-// The rendering is pgx's rather than the server's, and for two of these types
-// pgx spells the same value slightly differently: time always carries six
-// fractional digits ("12:34:56.000000" where PostgreSQL prints "12:34:56"), and
-// interval always carries a time part ("1 day 00:00:00" where PostgreSQL prints
-// "1 day"). Both parse back to the same value. tsvector, which pgx also spells
-// differently, is rendered by tsvectorText first.
+// The rendering is pgx's rather than the server's. time, interval and tsvector,
+// where pgx's spelling differs from PostgreSQL's, are rendered by clockText and
+// tsvectorText first.
 func pgTextValue(m *pgtype.Map, v any, typeOID uint32) (string, bool) {
 	if s, ok := v.(string); ok {
 		return s, true
