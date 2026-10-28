@@ -113,6 +113,101 @@ func TestRecordText(t *testing.T) {
 	})
 }
 
+// Captured from PostgreSQL 17.11 in a UTC session: each raw value is the binary
+// record the JSON path reads, and each want is the same expression cast to text.
+var recordFieldsFromPostgres = []struct {
+	sql  string
+	raw  string
+	want string
+}{
+	{
+		`row('2024-01-02 03:04:05+00'::timestamptz, '10000-01-01'::timestamp, '0044-03-15 BC'::timestamptz)`,
+		"\x00\x00\x00\x03\x00\x00\x04\xa0\x00\x00\x00\b\x00\x02\xb0\xec\x85\x15\xf3@\x00\x00\x04Z\x00\x00\x00\b\x03\x80\xe7\v\x91;\x80\x00\x00\x00\x04\xa0\x00\x00\x00\b\xff\x1a\xf9\xde\xec[ \x00",
+		`("2024-01-02 03:04:05+00","10000-01-01 00:00:00","0044-03-15 00:00:00+00 BC")`,
+	},
+	{
+		`row(array['01:00'::time], array['1 day'::interval], array[1e20::float8, 0.5], array[0.00::numeric])`,
+		"\x00\x00\x00\x04\x00\x00\x04\x9f\x00\x00\x00 \x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x04;\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\b\x00\x00\x00\x00\u0593\xa4\x00\x00\x00\x04\xa3\x00\x00\x00(\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x04\xa2\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03\xfe\x00\x00\x00,\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x02\xbd\x00\x00\x00\x02\x00\x00\x00\x01\x00\x00\x00\bD\x15\xaf\x1dx\xb5\x8c@\x00\x00\x00\b?\xe0\x00\x00\x00\x00\x00\x00\x00\x00\x04\xcf\x00\x00\x00 \x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x06\xa4\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\b\x00\x00\x00\x00\x00\x00\x00\x02",
+		`({01:00:00},"{""1 day""}","{1e+20,0.5}",{0.00})`,
+	},
+	{
+		`row(array[box '((1,1),(0,0))', box '((2,2),(1,1))'], '[0:1]={1,2}'::int4[], array['{"b":1, "a":2}'::json], array['a b','','NULL','x"y'])`,
+		"\x00\x00\x00\x04\x00\x00\x03\xfc\x00\x00\x00\\\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x02[\x00\x00\x00\x02\x00\x00\x00\x01\x00\x00\x00 ?\xf0\x00\x00\x00\x00\x00\x00?\xf0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00 @\x00\x00\x00\x00\x00\x00\x00@\x00\x00\x00\x00\x00\x00\x00?\xf0\x00\x00\x00\x00\x00\x00?\xf0\x00\x00\x00\x00\x00\x00\x00\x00\x03\xef\x00\x00\x00$\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x01\x00\x00\x00\x04\x00\x00\x00\x02\x00\x00\x00\xc7\x00\x00\x00&\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00r\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x0e{\"b\":1, \"a\":2}\x00\x00\x03\xf1\x00\x00\x00.\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00\x04\x00\x00\x00\x01\x00\x00\x00\x03a b\x00\x00\x00\x00\x00\x00\x00\x04NULL\x00\x00\x00\x03x\"y",
+		`("{(1,1),(0,0);(2,2),(1,1)}","[0:1]={1,2}","{""{\\""b\\"":1, \\""a\\"":2}""}","{""a b"","""",""NULL"",""x\\""y""}")`,
+	},
+	{
+		`row(array['192.168.1.1'::inet], array['8 days 01:02:03'::interval], array[row(1,'a b')], '[-2:-1][3:4]={{1,2},{3,NULL}}'::int8[])`,
+		"\x00\x00\x00\x04\x00\x00\x04\x11\x00\x00\x00 \x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03e\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\b\x02 \x00\x04\xc0\xa8\x01\x01\x00\x00\x04\xa3\x00\x00\x00(\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x04\xa2\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x10\x00\x00\x00\x00\xdd\xe8x\xc0\x00\x00\x00\b\x00\x00\x00\x00\x00\x00\b\xef\x00\x00\x003\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\b\xc9\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x1b\x00\x00\x00\x02\x00\x00\x00\x17\x00\x00\x00\x04\x00\x00\x00\x01\x00\x00\x02\xc1\x00\x00\x00\x03a b\x00\x00\x03\xf8\x00\x00\x00D\x00\x00\x00\x02\x00\x00\x00\x01\x00\x00\x00\x14\x00\x00\x00\x02\xff\xff\xff\xfe\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\b\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\b\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\b\x00\x00\x00\x00\x00\x00\x00\x03\xff\xff\xff\xff",
+		`({192.168.1.1},"{""8 days 01:02:03""}","{""(1,\\""a b\\"")""}","[-2:-1][3:4]={{1,2},{3,NULL}}")`,
+	},
+}
+
+// Fields are spelled as record_out spells them: timestamps as timestamp_out, and
+// arrays as array_out with each element in its own type's PostgreSQL text.
+func TestRecordTextMatchesPostgres(t *testing.T) {
+	m := pgtype.NewMap()
+	for _, tt := range recordFieldsFromPostgres {
+		t.Run(tt.sql, func(t *testing.T) {
+			got, ok := recordText(m, []byte(tt.raw))
+			require.True(t, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestArrayFieldTextRejectsMalformedArrays(t *testing.T) {
+	m := pgtype.NewMap()
+	valid := []byte(rawInt4Dim2)
+	got, ok := arrayFieldText(m, oidInt4, valid)
+	require.True(t, ok)
+	require.Equal(t, "{{1,2},{3,4}}", got)
+
+	for name, raw := range map[string][]byte{
+		"truncated element": valid[:len(valid)-1],
+		"trailing bytes":    append(append([]byte{}, valid...), 0),
+		"short header":      valid[:8],
+		"element OID differs": func() []byte {
+			b := append([]byte{}, valid...)
+			binary.BigEndian.PutUint32(b[8:], oidInt8)
+			return b
+		}(),
+		"zero length dimension": func() []byte {
+			b := append([]byte{}, valid...)
+			binary.BigEndian.PutUint32(b[12:], 0)
+			return b
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, ok := arrayFieldText(m, oidInt4, raw)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestWriteArrayElemMatchesArrayOut(t *testing.T) {
+	for _, tt := range []struct {
+		in    string
+		delim byte
+		want  string
+	}{
+		{"abc", ',', `abc`},
+		{"", ',', `""`},
+		{"null", ',', `"null"`},
+		{"a,b", ',', `"a,b"`},
+		{"a;b", ',', `a;b`},
+		{"(1,1),(0,0)", ';', `(1,1),(0,0)`},
+		{"a;b", ';', `"a;b"`},
+		{"a\vb", ',', "\"a\vb\""},
+		{`x"y\z`, ',', `"x\"y\\z"`},
+		{"{x}", ',', `"{x}"`},
+		{"(x)", ',', `(x)`},
+	} {
+		var b strings.Builder
+		writeArrayElem(&b, tt.in, tt.delim)
+		assert.Equal(t, tt.want, b.String(), "input %q", tt.in)
+	}
+}
+
 func TestRecordColumnValue(t *testing.T) {
 	m := pgtype.NewMap()
 	one := binaryRecord(recordField{oid: oidInt4, data: []byte{0, 0, 0, 1}})
@@ -194,4 +289,17 @@ func TestConformance_RecordColumnsAsText(t *testing.T) {
 	rows := rowsJSON(t, pg, "SELECT r, rs FROM t")
 	assert.JSONEq(t, `"(1,\"a b\",)"`, string(rows[0]["r"]))
 	assert.JSONEq(t, `["(1,\"a b\",)",null]`, string(rows[0]["rs"]))
+}
+
+func TestConformance_RecordFieldsSpelledAsPostgres(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT r FROM t", pgfake.Result{
+		Cols: []pgfake.Col{{Name: "r", TypeOID: oidRecord}},
+		Rows: [][]any{{pgfake.RawColumn([]byte(recordFieldsFromPostgres[0].raw))}, {pgfake.RawColumn([]byte(recordFieldsFromPostgres[1].raw))}},
+		Tag:  "SELECT 2",
+	})
+
+	rows := rowsJSON(t, pg, "SELECT r FROM t")
+	assert.JSONEq(t, `"(\"2024-01-02 03:04:05+00\",\"10000-01-01 00:00:00\",\"0044-03-15 00:00:00+00 BC\")"`, string(rows[0]["r"]))
+	assert.JSONEq(t, `"({01:00:00},\"{\"\"1 day\"\"}\",\"{1e+20,0.5}\",{0.00})"`, string(rows[1]["r"]))
 }

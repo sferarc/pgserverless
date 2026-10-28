@@ -3,6 +3,7 @@ package pgserverless
 import (
 	"encoding/binary"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -77,13 +78,11 @@ func recordFieldText(m *pgtype.Map, oid uint32, field []byte) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if _, isArray := t.Codec.(*pgtype.ArrayCodec); isArray {
-		// pgtype.Array keeps the dimensions a plain decode flattens.
-		var arr pgtype.Array[any]
-		if err := m.Scan(oid, pgBinaryFormat, field, &arr); err != nil {
+	if codec, isArray := t.Codec.(*pgtype.ArrayCodec); isArray {
+		if codec.ElementType == nil {
 			return "", false
 		}
-		return encodeText(m, oid, arr)
+		return arrayFieldText(m, codec.ElementType.OID, field)
 	}
 	v, err := t.Codec.DecodeValue(m, oid, pgBinaryFormat, field)
 	if err != nil || v == nil {
@@ -94,6 +93,9 @@ func recordFieldText(m *pgtype.Map, oid uint32, field []byte) (string, bool) {
 		return pgFloatText(f, 64), true
 	case float32:
 		return pgFloatText(float64(f), 32), true
+	}
+	if oid == oidTimestamp || oid == oidTimestamptz {
+		return timestampFieldText(m, oid, v)
 	}
 	if s, ok := coerceNeonValue(m, v, oid).(string); ok {
 		return s, true
@@ -121,6 +123,134 @@ func pgFloatText(f float64, bitSize int) string {
 		return e
 	}
 	return strconv.FormatFloat(f, 'f', -1, bitSize)
+}
+
+// timestampFieldText spells a timestamp as timestamp_out does in a UTC session, where the column path keeps RFC 3339.
+func timestampFieldText(m *pgtype.Map, oid uint32, v any) (string, bool) {
+	if s, ok := infinityText(v); ok {
+		return s, true
+	}
+	s, ok := encodeText(m, oid, v)
+	if ok && oid == oidTimestamptz {
+		s = utcOffsetText(s)
+	}
+	return s, ok
+}
+
+// arrayFieldText renders a binary array as array_out does, spelling each element as recordFieldText does.
+func arrayFieldText(m *pgtype.Map, elemOID uint32, raw []byte) (string, bool) {
+	const headerLen = 12
+	const dimLen = 8
+	if len(raw) < headerLen {
+		return "", false
+	}
+	ndim := int(int32(binary.BigEndian.Uint32(raw)))
+	if ndim == 0 {
+		return "{}", true
+	}
+	if ndim < 0 || ndim > pgMaxArrayDims || len(raw) < headerLen+ndim*dimLen ||
+		binary.BigEndian.Uint32(raw[8:]) != elemOID {
+		return "", false
+	}
+	dims := make([]int, ndim)
+	var b strings.Builder
+	total := 1
+	decorated := false
+	for i := range dims {
+		d := raw[headerLen+i*dimLen:]
+		n := int(int32(binary.BigEndian.Uint32(d)))
+		if n <= 0 || total > math.MaxInt32/n {
+			return "", false
+		}
+		dims[i] = n
+		total *= n
+		if int32(binary.BigEndian.Uint32(d[4:])) != 1 {
+			decorated = true
+		}
+	}
+	if decorated {
+		// array_out writes the bounds only when some lower bound is not 1.
+		for i := range dims {
+			lb := int64(int32(binary.BigEndian.Uint32(raw[headerLen+i*dimLen+4:])))
+			b.WriteByte('[')
+			b.WriteString(strconv.FormatInt(lb, 10))
+			b.WriteByte(':')
+			b.WriteString(strconv.FormatInt(lb+int64(dims[i])-1, 10))
+			b.WriteByte(']')
+		}
+		b.WriteByte('=')
+	}
+	delim := byte(',')
+	if elemOID == oidBox {
+		delim = ';'
+	}
+	rest := raw[headerLen+ndim*dimLen:]
+	for i := range total {
+		// Open one brace per dimension this element starts, close one per dimension it ends.
+		stride := total
+		for _, d := range dims {
+			if i%stride == 0 {
+				b.WriteByte('{')
+			}
+			stride /= d
+		}
+		if len(rest) < 4 {
+			return "", false
+		}
+		n := int(int32(binary.BigEndian.Uint32(rest)))
+		rest = rest[4:]
+		if n < 0 {
+			b.WriteString("NULL")
+		} else {
+			if n > len(rest) {
+				return "", false
+			}
+			s, ok := recordFieldText(m, elemOID, rest[:n])
+			if !ok {
+				return "", false
+			}
+			writeArrayElem(&b, s, delim)
+			rest = rest[n:]
+		}
+		stride = 1
+		for _, dim := range slices.Backward(dims) {
+			stride *= dim
+			if (i+1)%stride != 0 {
+				break
+			}
+			b.WriteByte('}')
+		}
+		if i < total-1 {
+			b.WriteByte(delim)
+		}
+	}
+	if len(rest) != 0 {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// writeArrayElem appends s quoted as array_out quotes an element.
+func writeArrayElem(b *strings.Builder, s string, delim byte) {
+	quote := s == "" || strings.EqualFold(s, "NULL")
+	for i := 0; !quote && i < len(s); i++ {
+		switch c := s[i]; c {
+		case '"', '\\', '{', '}', delim, ' ', '\t', '\n', '\r', '\v', '\f':
+			quote = true
+		}
+	}
+	if !quote {
+		b.WriteString(s)
+		return
+	}
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' || s[i] == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	b.WriteByte('"')
 }
 
 func encodeText(m *pgtype.Map, oid uint32, v any) (string, bool) {
