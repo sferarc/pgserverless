@@ -255,7 +255,7 @@ func rowValues(rows pgx.Rows, descs []pgconn.FieldDescription, m *pgtype.Map, ra
 		}
 		values[i] = coerceNeonValue(m, values[i], d.DataTypeOID)
 		if i < len(raw) {
-			values[i] = numericScaleValue(values[i], raw[i], d.DataTypeOID, d.Format)
+			values[i] = numericScaleValue(m, values[i], raw[i], d.DataTypeOID, d.Format)
 			values[i] = reshapeArrayValue(m, values[i], raw[i], d.DataTypeOID, d.Format)
 		}
 	}

@@ -56,10 +56,8 @@ func recordText(m *pgtype.Map, raw []byte) (string, bool) {
 
 // recordFieldText renders one non-NULL binary field as PostgreSQL text.
 func recordFieldText(m *pgtype.Map, oid uint32, field []byte) (string, bool) {
-	if oid == oidNumeric {
-		if s, ok := numericZeroText(field); ok {
-			return s, true
-		}
+	if s, ok := numericScaleText(m, field, oid); ok {
+		return s, true
 	}
 	switch oid {
 	case oidRecord:
