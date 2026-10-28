@@ -1,11 +1,13 @@
 // Command pgserverless is the minimal reference server: it serves one
 // PostgreSQL database over HTTP (POST /sql) and WebSocket (GET /v2).
 //
-// Configuration is two environment variables. DATABASE_URL names the database
+// Configuration is environment variables. DATABASE_URL names the database
 // to serve (only its host, port and sslmode; clients bring their own
 // credentials), and PGSERVERLESS_ADDR the listen address (default 127.0.0.1:4000).
 // A listener beyond loopback also needs PGSERVERLESS_ALLOW_REMOTE=true, because
-// this server has no authentication of its own.
+// this server has no authentication of its own. PGSERVERLESS_CORS_ORIGINS, a
+// comma separated list or "*", lets browser pages on those origins call
+// POST /sql; unset, no cross-origin page can read a response.
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,6 +61,7 @@ func run() error {
 		httpAdmission(db, tls),
 		pgserverless.WithHTTPWebSocketAdmission(wsAdmission(db, tls)),
 		pgserverless.WithHTTPMaxResponseBytes(pgserverless.MaxResponseBytes),
+		pgserverless.WithHTTPCORSOrigins(splitOrigins(os.Getenv("PGSERVERLESS_CORS_ORIGINS"))...),
 	))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -126,6 +130,16 @@ func tlsMode(dbURL string) string {
 		return pgserverless.TLSDisable
 	}
 	return pgserverless.TLSRequire
+}
+
+func splitOrigins(s string) []string {
+	var out []string
+	for o := range strings.SplitSeq(s, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // isLoopback reports whether addr binds only to the loopback interface.

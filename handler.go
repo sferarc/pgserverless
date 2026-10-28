@@ -374,19 +374,22 @@ func requestArrayMode(h http.Header, req *SQLRequest) bool {
 	return arrayMode || *req.ArrayMode
 }
 
+// headerAliases pairs each Neon-prefixed request header with the plain name the handler reads.
+var headerAliases = [][2]string{
+	{"Neon-Connection-String", "Connection-String"},
+	{"Neon-Raw-Text-Output", "Raw-Text-Output"},
+	{"Neon-Array-Mode", "Array-Mode"},
+	{"Neon-Pool-Opt-In", "Pool-Opt-In"},
+	{"Neon-Batch-Read-Only", "Batch-Read-Only"},
+	{"Neon-Batch-Isolation-Level", "Batch-Isolation-Level"},
+	{"Neon-Batch-Deferrable", "Batch-Deferrable"},
+}
+
 // normalizeHeaders maps the driver's Neon-prefixed request headers onto the
 // plain names the handler reads. A header already set under the plain name
 // wins, so a caller can drive the handler directly without the prefix.
 func normalizeHeaders(h http.Header) {
-	for _, m := range [][2]string{
-		{"Neon-Connection-String", "Connection-String"},
-		{"Neon-Raw-Text-Output", "Raw-Text-Output"},
-		{"Neon-Array-Mode", "Array-Mode"},
-		{"Neon-Pool-Opt-In", "Pool-Opt-In"},
-		{"Neon-Batch-Read-Only", "Batch-Read-Only"},
-		{"Neon-Batch-Isolation-Level", "Batch-Isolation-Level"},
-		{"Neon-Batch-Deferrable", "Batch-Deferrable"},
-	} {
+	for _, m := range headerAliases {
 		if h.Get(m[1]) == "" {
 			if v := h.Get(m[0]); v != "" {
 				h.Set(m[1], v)

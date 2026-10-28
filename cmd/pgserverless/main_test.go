@@ -114,3 +114,13 @@ func TestRunRefusesRemoteListener(t *testing.T) {
 		t.Errorf("run() = %v, want a refusal", err)
 	}
 }
+
+func TestSplitOrigins(t *testing.T) {
+	got := splitOrigins(" https://a.example.test, ,https://b.example.test ")
+	if strings.Join(got, "|") != "https://a.example.test|https://b.example.test" {
+		t.Errorf("got %q", got)
+	}
+	if got := splitOrigins(""); got != nil {
+		t.Errorf("empty: got %q, want nil so CORS stays off", got)
+	}
+}
