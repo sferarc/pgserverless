@@ -52,6 +52,8 @@ type PG struct {
 	simpleSQL []string
 	// lastBindParams records the parameter values of the most recent Bind.
 	lastBindParams [][]byte
+	// committed records every IsWrite statement whose transaction committed.
+	committed []string
 
 	// rejectAuth, when set, is returned instead of AuthenticationOk. It exists
 	// so a test can exercise the path a wrong credential takes, which is the
@@ -154,6 +156,22 @@ func (f *PG) StartupParam(Name string) string {
 	return f.lastStartup[Name]
 }
 
+// CommittedWrites returns the IsWrite statements whose transaction committed,
+// so a test can tell a rolled-back write from a persisted one.
+func (f *PG) CommittedWrites() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.committed...)
+}
+
+// commit persists the session's pending writes.
+func (f *PG) commit(s *session) {
+	f.mu.Lock()
+	f.committed = append(f.committed, s.pending...)
+	f.mu.Unlock()
+	s.pending = nil
+}
+
 // LastBindParams returns the parameter values of the most recent Bind, nil for SQL NULL.
 func (f *PG) LastBindParams() [][]byte {
 	f.mu.Lock()
@@ -199,9 +217,10 @@ type session struct {
 	resultFormats []int16           // result format codes from the current Bind
 
 	// Transaction state, used to model READ ONLY enforcement.
-	inTxn    bool // a BEGIN has opened a transaction not yet committed
-	readOnly bool // the open transaction is READ ONLY
-	aborted  bool // an error occurred; skip messages until the next Sync
+	inTxn    bool     // a BEGIN has opened a transaction not yet committed
+	readOnly bool     // the open transaction is READ ONLY
+	aborted  bool     // an error occurred; skip messages until the next Sync
+	pending  []string // IsWrite statements run since the transaction began
 }
 
 // isControlSQL reports whether sql is a transaction-control statement the fake
@@ -317,6 +336,11 @@ func (f *PG) handle(conn net.Conn) {
 				}
 			}
 			status := s.txStatus()
+			if s.aborted {
+				s.pending = nil
+			} else if !s.inTxn {
+				f.commit(s)
+			}
 			s.aborted = false // simple-query errors are resolved at ReadyForQuery
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: status})
 			_ = be.Flush()
@@ -379,6 +403,9 @@ func (f *PG) handle(conn net.Conn) {
 			f.writeResult(be, s, s.portalSQL, false, s.resultFormats)
 
 		case *pgproto3.Sync:
+			if !s.inTxn {
+				f.commit(s)
+			}
 			be.Send(&pgproto3.ReadyForQuery{TxStatus: s.txStatus()})
 			_ = be.Flush()
 
@@ -391,10 +418,11 @@ func (f *PG) handle(conn net.Conn) {
 	}
 }
 
-// resetTxn clears any open-transaction state.
+// resetTxn clears any open-transaction state, discarding uncommitted writes.
 func (s *session) resetTxn() {
 	s.inTxn = false
 	s.readOnly = false
+	s.pending = nil
 }
 
 // txStatus is the ReadyForQuery transaction-status byte: 'I' idle, 'T' in a
@@ -430,6 +458,7 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 			s.resetTxn()
 			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("ROLLBACK")})
 		default: // COMMIT / END
+			f.commit(s)
 			s.resetTxn()
 			be.Send(&pgproto3.CommandComplete{CommandTag: []byte("COMMIT")})
 		}
@@ -463,6 +492,9 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 		s.aborted = true
 		be.Send(res.PgError)
 		return
+	}
+	if res.IsWrite {
+		s.pending = append(s.pending, sql)
 	}
 	if sendRowDesc && len(res.Cols) > 0 {
 		be.Send(rowDescription(res.Cols))

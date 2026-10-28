@@ -92,6 +92,79 @@ func TestBatchStatementsShareTheResponseCap(t *testing.T) {
 	}
 }
 
+const writeAfterSelect = `{"queries":[{"query":"SELECT v FROM t"},{"query":"INSERT INTO log VALUES (1)"}]}`
+
+// capServer builds one capped server on its own fake, so each case reads only
+// the writes it made.
+type capServer func(t *testing.T, maxBytes int64) (*pgfake.PG, http.Handler)
+
+func capServers() map[string]capServer {
+	servers := map[string]capServer{}
+	for _, name := range []string{"echo", "net/http"} {
+		servers[name] = func(t *testing.T, maxBytes int64) (*pgfake.PG, http.Handler) {
+			pg := writeAfterSelectPG(t)
+			return pg, cappedServers(pg, maxBytes)[name]
+		}
+	}
+	servers["governed simple protocol"] = func(t *testing.T, maxBytes int64) (*pgfake.PG, http.Handler) {
+		pg := writeAfterSelectPG(t)
+		e := echo.New()
+		static := StaticUpstream(pg.Addr())
+		NewHandler(func(c echo.Context) (Upstream, error) {
+			up, err := static(c)
+			up.InsecureSkipVerify = true
+			up.RawTextSimpleProtocol = true
+			return up, err
+		}, WithStatementCounter(semicolonCount), WithMaxResponseBytes(maxBytes)).Register(e)
+		return pg, e
+	}
+	return servers
+}
+
+func writeAfterSelectPG(t *testing.T) *pgfake.PG {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT v FROM t", tenTextRows())
+	pg.SetResult("INSERT INTO log VALUES (1)", pgfake.Result{Tag: "INSERT 0 1", IsWrite: true})
+	return pg
+}
+
+var capBatchModes = map[string]map[string]string{
+	"implicit":    driverHeaders,
+	"transaction": {"Neon-Raw-Text-Output": "true", "Neon-Array-Mode": "true", "Neon-Batch-Isolation-Level": "Serializable"},
+}
+
+// PostgreSQL can run the whole batch before the handler reads past the cap, so
+// a 507 must roll back a write queued after the oversized result, as Neon does.
+func TestBatchOverTheCapDoesNotPersistLaterWrites(t *testing.T) {
+	for name, server := range capServers() {
+		for mode, headers := range capBatchModes {
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				pg, h := server(t, 99)
+
+				rec := doSQL(h, writeAfterSelect, headers)
+
+				require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
+				assert.Empty(t, pg.CommittedWrites())
+			})
+		}
+	}
+}
+
+func TestBatchUnderTheCapCommitsItsWrites(t *testing.T) {
+	for name, server := range capServers() {
+		for mode, headers := range capBatchModes {
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				pg, h := server(t, 100)
+
+				rec := doSQL(h, writeAfterSelect, headers)
+
+				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+				assert.Equal(t, []string{"INSERT INTO log VALUES (1)"}, pg.CommittedWrites())
+			})
+		}
+	}
+}
+
 func TestResponsesAreUncappedByDefault(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT v FROM t", tenTextRows())

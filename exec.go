@@ -2,6 +2,7 @@ package pgserverless
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -43,9 +44,10 @@ func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, q
 // results. When the driver requested explicit transaction characteristics
 // (read-only / isolation level / deferrable) the batch is wrapped in an
 // explicit BEGIN … COMMIT so PostgreSQL applies and enforces them; otherwise it
-// runs as a single implicit-transaction pipeline (pgx.SendBatch).
+// runs as a single implicit-transaction pipeline (pgx.SendBatch). A capped
+// batch always takes the explicit path, as Neon's does, so a 507 can roll it back.
 func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
-	if !opts.isDefault() {
+	if !opts.isDefault() || budget.capped() {
 		executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts, budget)
 		return
 	}
@@ -87,8 +89,8 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 // and a newline on both sides of every ';' keeps a trailing -- comment from
 // swallowing the next item.
 func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
-	// executeBatchTxn queues BEGIN before and COMMIT after the items.
-	txn := !opts.isDefault()
+	// executeBatchTxn queues BEGIN before the items and may queue COMMIT after them.
+	txn := !opts.isDefault() || budget.capped()
 	joined := make([]QueryItem, len(queries))
 	for i, q := range queries {
 		if err := checkBatchItem(count, q.Query); err != nil {
@@ -112,14 +114,20 @@ func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Conte
 // characteristics — notably, a READ ONLY batch rejects any write with SQLSTATE
 // 25006, failing closed exactly like the proxy's read-only policy. A failure in
 // any statement aborts the transaction (no COMMIT is reached), so partial
-// effects never persist.
+// effects never persist. Under a response cap PostgreSQL may run every
+// statement before the handler reads past the cap, so COMMIT is sent only once
+// every result fit; a 507 closes the connection with the transaction still
+// open, which rolls it back, as Neon does.
 func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
+	deferCommit := budget.capped()
 	batch := &pgx.Batch{}
 	batch.Queue(opts.beginSQL())
 	for _, q := range queries {
 		batch.Queue(q.Query, ConvertParams(q.Params)...)
 	}
-	batch.Queue("COMMIT")
+	if !deferCommit {
+		batch.Queue("COMMIT")
+	}
 
 	br := conn.SendBatch(ctx, batch)
 	defer br.Close()
@@ -138,6 +146,10 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 			return
 		}
 		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
+		if errors.Is(err, ErrResponseTooLarge) {
+			// Closing stops an oversized result instead of draining it.
+			_ = conn.Close(ctx)
+		}
 		rows.Close()
 		if err != nil {
 			writePgError(w, err)
@@ -146,8 +158,16 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 		results = append(results, *result)
 	}
 
-	// Drain the COMMIT result.
-	if _, err := br.Exec(); err != nil {
+	if deferCommit {
+		if err := br.Close(); err != nil {
+			writePgError(w, err)
+			return
+		}
+		if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+			writePgError(w, err)
+			return
+		}
+	} else if _, err := br.Exec(); err != nil { // Drain the COMMIT result.
 		writePgError(w, err)
 		return
 	}
@@ -164,9 +184,13 @@ type responseBudget struct {
 	max, used int64
 }
 
+func (b *responseBudget) capped() bool {
+	return b != nil && b.max > 0
+}
+
 // add charges one row's values and fails once the response passes the cap.
 func (b *responseBudget) add(row [][]byte) error {
-	if b == nil || b.max <= 0 {
+	if !b.capped() {
 		return nil
 	}
 	for _, v := range row {
