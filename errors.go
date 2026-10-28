@@ -19,7 +19,7 @@ var (
 	ErrMissingQuery            = errors.New("query is required")
 	ErrMissingConnectionString = errors.New("Connection-String header is required")
 	ErrInvalidConnectionString = errors.New("invalid connection string")
-	ErrResponseTooLarge        = errors.New("response too large")
+	ErrResponseTooLarge        = errors.New("response is too large")
 	ErrRequestTooLarge         = errors.New("request is too large")
 )
 

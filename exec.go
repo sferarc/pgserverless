@@ -2,6 +2,7 @@ package pgserverless
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -10,11 +11,15 @@ import (
 )
 
 func QueryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, arrayMode, rawText bool) (*QueryResult, error) {
+	return queryRows(ctx, conn, query, params, arrayMode, rawText, nil)
+}
+
+func queryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, arrayMode, rawText bool, budget *responseBudget) (*QueryResult, error) {
 	rows, err := conn.Query(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}
-	result, err := RowsToResult(rows, conn.TypeMap(), arrayMode, rawText)
+	result, err := rowsToResult(rows, conn.TypeMap(), arrayMode, rawText, budget)
 	rows.Close()
 	if err != nil || rawText {
 		return result, err
@@ -25,8 +30,8 @@ func QueryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 }
 
 // executeSingle executes a single query and returns the result as JSON.
-func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, query string, params []any, arrayMode, rawText bool) {
-	result, err := QueryRows(ctx, conn, query, params, arrayMode, rawText)
+func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, query string, params []any, arrayMode, rawText bool, budget *responseBudget) {
+	result, err := queryRows(ctx, conn, query, params, arrayMode, rawText, budget)
 	if err != nil {
 		writePgError(w, err)
 		return
@@ -39,9 +44,9 @@ func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, q
 // (read-only / isolation level / deferrable) the batch is wrapped in an
 // explicit BEGIN … COMMIT so PostgreSQL applies and enforces them; otherwise it
 // runs as a single implicit-transaction pipeline (pgx.SendBatch).
-func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions) {
+func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
 	if !opts.isDefault() {
-		executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts)
+		executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts, budget)
 		return
 	}
 
@@ -60,7 +65,7 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 			writePgError(w, err)
 			return
 		}
-		result, err := RowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText)
+		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
 		rows.Close()
 		if err != nil {
 			writePgError(w, err)
@@ -81,7 +86,7 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 // brackets the whole batch itself. Each item must be one complete statement,
 // and a newline on both sides of every ';' keeps a trailing -- comment from
 // swallowing the next item.
-func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode, rawText bool, opts txnOptions) {
+func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
 	// executeBatchTxn queues BEGIN before and COMMIT after the items.
 	txn := !opts.isDefault()
 	joined := make([]QueryItem, len(queries))
@@ -98,7 +103,7 @@ func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Conte
 		}
 		joined[i] = q
 	}
-	executeBatch(w, conn, ctx, joined, arrayMode, rawText, opts)
+	executeBatch(w, conn, ctx, joined, arrayMode, rawText, opts, budget)
 }
 
 // executeBatchTxn runs the batch inside an explicit transaction with the
@@ -108,7 +113,7 @@ func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Conte
 // 25006, failing closed exactly like the proxy's read-only policy. A failure in
 // any statement aborts the transaction (no COMMIT is reached), so partial
 // effects never persist.
-func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions) {
+func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
 	batch := &pgx.Batch{}
 	batch.Queue(opts.beginSQL())
 	for _, q := range queries {
@@ -132,7 +137,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 			writePgError(w, err)
 			return
 		}
-		result, err := RowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText)
+		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
 		rows.Close()
 		if err != nil {
 			writePgError(w, err)
@@ -153,6 +158,26 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 
+// responseBudget counts the row bytes one response has read against its cap;
+// a batch shares one budget across its statements, as Neon's buffer does.
+type responseBudget struct {
+	max, used int64
+}
+
+// add charges one row's values and fails once the response passes the cap.
+func (b *responseBudget) add(row [][]byte) error {
+	if b == nil || b.max <= 0 {
+		return nil
+	}
+	for _, v := range row {
+		b.used += int64(len(v))
+	}
+	if b.used > b.max {
+		return fmt.Errorf("%w (max is %d bytes)", ErrResponseTooLarge, b.max)
+	}
+	return nil
+}
+
 // batchArrayMode resolves the effective array mode for one batch item: a
 // per-query arrayMode overrides the request-level default.
 func batchArrayMode(q QueryItem, arrayMode bool) bool {
@@ -170,6 +195,10 @@ func batchArrayMode(q QueryItem, arrayMode bool) bool {
 // connection's type map, which the coercion uses to render back to PostgreSQL
 // text the types whose Go decode does not marshal to it.
 func RowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool) (*QueryResult, error) {
+	return rowsToResult(rows, m, arrayMode, rawText, nil)
+}
+
+func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget *responseBudget) (*QueryResult, error) {
 	descs := rows.FieldDescriptions()
 	fields := make([]FieldDefinition, len(descs))
 	for i, d := range descs {
@@ -186,6 +215,9 @@ func RowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool) (*Query
 
 	var resultRows []any
 	for rows.Next() {
+		if err := budget.add(rows.RawValues()); err != nil {
+			return nil, err
+		}
 		values, err := rowValues(rows, descs, m, rawText)
 		if err != nil {
 			return nil, err

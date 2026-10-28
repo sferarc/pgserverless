@@ -54,7 +54,11 @@ func run() error {
 
 	tls := tlsMode(dbURL)
 	mux := http.NewServeMux()
-	mux.Handle("/", pgserverless.NewHTTPHandler(httpAdmission(db, tls), pgserverless.WithHTTPWebSocketAdmission(wsAdmission(db, tls))))
+	mux.Handle("/", pgserverless.NewHTTPHandler(
+		httpAdmission(db, tls),
+		pgserverless.WithHTTPWebSocketAdmission(wsAdmission(db, tls)),
+		pgserverless.WithHTTPMaxResponseBytes(pgserverless.MaxResponseBytes),
+	))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))

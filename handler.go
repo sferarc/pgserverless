@@ -31,6 +31,9 @@ const QueryTimeout = 30 * time.Second
 // dialed.
 const MaxRequestBodyBytes = 10 << 20
 
+// MaxResponseBytes is Neon's default response cap, for WithMaxResponseBytes.
+const MaxResponseBytes = 10 << 20
+
 // Upstream says where a request's query should run and as whom. An Admission
 // returns one once it has decided the request may proceed.
 type Upstream struct {
@@ -142,16 +145,24 @@ func WithStatementCounter(fn func(sql string) (int, error)) Option {
 	return func(h *Handler) { h.countStatements = fn }
 }
 
+// WithMaxResponseBytes fails a POST /sql response with 507 once the row values
+// PostgreSQL sent for it pass n bytes, as Neon does, so one cross join cannot
+// exhaust the server's memory. Zero, the default, leaves responses uncapped.
+func WithMaxResponseBytes(n int64) Option {
+	return func(h *Handler) { h.maxResponseBytes = n }
+}
+
 // Handler serves both transports: the HTTP (fetch) transport at POST /sql, and
 // the WebSocket tunnel at GET /v2.
 //
 // They are mounted separately, by Register and RegisterWebSocket, because a
 // deployment may want one without the other.
 type Handler struct {
-	admit           Admission
-	admitWS         Admission
-	onDialError     func(c echo.Context, err error)
-	countStatements func(sql string) (int, error)
+	admit            Admission
+	admitWS          Admission
+	onDialError      func(c echo.Context, err error)
+	countStatements  func(sql string) (int, error)
+	maxResponseBytes int64
 }
 
 // NewHandler returns a Handler that admits requests through admit.
@@ -221,7 +232,7 @@ func dial(ctx context.Context, up Upstream, mode pgx.QueryExecMode) (*pgx.Conn, 
 // Query handles one serverless HTTP SQL request: single statement or batch,
 // object or array rows, native or raw-text values.
 func (h *Handler) Query(c echo.Context) error {
-	serveSQL(c.Response(), c.Request(), func() (Upstream, error) { return h.admit(c) }, h.dialErrorFor(c), h.countStatements)
+	serveSQL(c.Response(), c.Request(), func() (Upstream, error) { return h.admit(c) }, h.dialErrorFor(c), h.countStatements, h.maxResponseBytes)
 	return nil
 }
 
@@ -233,7 +244,7 @@ func (h *Handler) dialErrorFor(c echo.Context) func(error) {
 }
 
 // serveSQL is the transport-independent core of POST /sql.
-func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error)) {
+func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error), maxResponse int64) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 
 	up, aerr := admit()
@@ -292,12 +303,13 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 	}
 	defer conn.Close(context.Background())
 
+	budget := &responseBudget{max: maxResponse}
 	switch {
 	case req.Queries != nil && simple:
-		executeBatchSimple(w, conn, queryCtx, req.Queries, count, arrayMode, rawText, txnOpts)
+		executeBatchSimple(w, conn, queryCtx, req.Queries, count, arrayMode, rawText, txnOpts, budget)
 		return
 	case req.Queries != nil:
-		executeBatch(w, conn, queryCtx, req.Queries, arrayMode, rawText, txnOpts)
+		executeBatch(w, conn, queryCtx, req.Queries, arrayMode, rawText, txnOpts, budget)
 		return
 	case simple:
 		if err := checkSingleStatement(count, *req.Query); err != nil {
@@ -305,7 +317,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 			return
 		}
 	}
-	executeSingle(w, conn, queryCtx, *req.Query, ConvertParams(req.Params), arrayMode, rawText)
+	executeSingle(w, conn, queryCtx, *req.Query, ConvertParams(req.Params), arrayMode, rawText, budget)
 }
 
 // writeJSON writes v as JSON; echo's debug and ?pretty indentation and custom serializer do not apply.

@@ -162,7 +162,7 @@ Everything after that decision (parse the body, dial, run, coerce, encode) is th
 - The tunnel does not check the `Origin` header. `Admission` is the authentication point.
 - The tunnel bounds only the upstream dial (10 seconds). An open session has no time limit.
 - A `POST /sql` body over `MaxRequestBodyBytes` (10 MiB, Neon's default) is refused with 413 and `request is too large (max is 10485760 bytes)`, before the upstream is dialed.
-- Responses are not size-capped by this package. Bound result sizes in the database or in front of the server.
+- Responses are uncapped unless `WithMaxResponseBytes` or `WithHTTPMaxResponseBytes` is set. With a cap, a response whose row values pass it fails with 507 and `response is too large (max is N bytes)`, and a batch counts all its statements together. `MaxResponseBytes` is Neon's default of 10 MiB, which `cmd/pgserverless` uses. The cap counts the bytes PostgreSQL sent, so the JSON can be somewhat larger.
 - SCRAM databases need `neonConfig.pipelineConnect = false` on the client. The driver's default pipelining assumes a cleartext password request and hangs otherwise.
 
 ## Correctness

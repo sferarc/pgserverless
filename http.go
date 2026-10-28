@@ -28,11 +28,17 @@ func WithHTTPStatementCounter(fn func(sql string) (int, error)) HTTPOption {
 	return func(h *httpHandler) { h.countStatements = fn }
 }
 
+// WithHTTPMaxResponseBytes is the net/http counterpart of WithMaxResponseBytes.
+func WithHTTPMaxResponseBytes(n int64) HTTPOption {
+	return func(h *httpHandler) { h.maxResponseBytes = n }
+}
+
 type httpHandler struct {
-	admit           HTTPAdmission
-	admitWS         HTTPAdmission
-	onDialError     func(r *http.Request, err error)
-	countStatements func(sql string) (int, error)
+	admit            HTTPAdmission
+	admitWS          HTTPAdmission
+	onDialError      func(r *http.Request, err error)
+	countStatements  func(sql string) (int, error)
+	maxResponseBytes int64
 }
 
 // NewHTTPHandler returns an http.Handler serving POST /sql and GET /v2, with
@@ -50,7 +56,7 @@ func NewHTTPHandler(admit HTTPAdmission, opts ...HTTPOption) http.Handler {
 }
 
 func (h *httpHandler) query(w http.ResponseWriter, r *http.Request) {
-	serveSQL(w, r, func() (Upstream, error) { return h.admit(r) }, h.dialErrorFor(r), h.countStatements)
+	serveSQL(w, r, func() (Upstream, error) { return h.admit(r) }, h.dialErrorFor(r), h.countStatements, h.maxResponseBytes)
 }
 
 func (h *httpHandler) upgrade(w http.ResponseWriter, r *http.Request) {
