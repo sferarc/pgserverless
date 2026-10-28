@@ -27,7 +27,8 @@ const WebSocketPath = "/v2"
 // proxy in between tell this traffic apart from any other WebSocket.
 const wsSubprotocol = "pg"
 
-// dialTimeout bounds the upstream connection attempt on the WebSocket path.
+// dialTimeout bounds the upstream connection attempt on the WebSocket path,
+// including the SSLRequest exchange and the TLS handshake.
 // The HTTP path has QueryTimeout covering the whole request; a tunnel has no
 // equivalent, because it is meant to stay open, so only the dial is bounded.
 const dialTimeout = 10 * time.Second
@@ -220,7 +221,7 @@ func dialUpstreamRaw(ctx context.Context, up Upstream) (net.Conn, error) {
 		return conn, nil
 	}
 
-	tlsConn, err := negotiateUpstreamTLS(conn, up, host)
+	tlsConn, err := negotiateUpstreamTLS(dialCtx, conn, up, host)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -234,7 +235,11 @@ func dialUpstreamRaw(ctx context.Context, up Upstream) (net.Conn, error) {
 // PostgreSQL does not speak TLS from the first byte. The client asks with an
 // 8 byte SSLRequest and the server answers with one byte, 'S' to proceed or 'N'
 // to refuse, and only then does the TLS handshake begin.
-func negotiateUpstreamTLS(conn net.Conn, up Upstream, host string) (net.Conn, error) {
+func negotiateUpstreamTLS(ctx context.Context, conn net.Conn, up Upstream, host string) (net.Conn, error) {
+	// An upstream that accepts TCP and then never answers would otherwise hold the tunnel open forever.
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	defer stop()
+
 	req := make([]byte, 8)
 	binary.BigEndian.PutUint32(req[0:4], 8)
 	binary.BigEndian.PutUint32(req[4:8], 80877103)
@@ -261,8 +266,11 @@ func negotiateUpstreamTLS(conn net.Conn, up Upstream, host string) (net.Conn, er
 		ServerName:         sni,
 		InsecureSkipVerify: up.InsecureSkipVerify, //nolint:gosec // the caller's explicit choice, see Upstream.
 	})
-	if err := tlsConn.Handshake(); err != nil {
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("upstream tls handshake: %w", err)
+	}
+	if !stop() {
+		return nil, fmt.Errorf("upstream tls handshake: %w", ctx.Err())
 	}
 	return tlsConn, nil
 }
