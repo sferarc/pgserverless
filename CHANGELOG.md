@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5
+
+### Patch Changes
+
+- 6c4c013: The WebSocket transport now forwards the bytes a client pipelines after its StartupMessage. The driver's default `pipelineConnect: "password"` sends the password in the same message as the startup, and the transport used to read it into a buffer and drop it, so a connection to a cleartext or md5 upstream hung until the server's authentication timeout. A startup packet longer than PostgreSQL's 10000 byte limit is refused.
+
 ## 0.2.4
 
 ### Patch Changes
