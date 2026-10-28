@@ -197,3 +197,28 @@ func TestStartupRefusesEndlessEncryptionRequests(t *testing.T) {
 		t.Fatal("startup phase never gave up")
 	}
 }
+
+// TestStartupRefusesOversizedPacket keeps a client from making the server allocate a length it chose; PostgreSQL caps it too.
+func TestStartupRefusesOversizedPacket(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := declineEncryptionAndReadStartup(server)
+		done <- err
+	}()
+
+	go func() { _, _ = client.Write([]byte{0, 0, 0x27, 0x11}) }() // 10001 bytes
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an oversized startup packet was accepted")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup phase waited for an oversized packet's body")
+	}
+}

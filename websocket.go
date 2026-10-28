@@ -1,6 +1,7 @@
 package pgserverless
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -164,16 +165,18 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 // a CancelRequest instead.
 //
 // Two things here are not obvious. The client defaults to pipelining its first
-// messages, so the startup bytes may arrive in the same read as what follows;
-// reading through a buffered pgproto3.Backend over a stream handles that,
-// which is why this takes a net.Conn rather than framing reads itself. And a
-// client may send SSLRequest and GSSEncRequest in sequence, so declining once
-// is not enough.
+// messages, so the bytes after the startup (its password) may arrive in the
+// same WebSocket message. Each packet is therefore read to its declared length
+// and no further, leaving the rest on conn for the relay; a pgproto3.Backend
+// over conn buffers ahead and dropped them. And a client may send SSLRequest
+// and GSSEncRequest in sequence, so declining once is not enough.
 func declineEncryptionAndReadStartup(conn net.Conn) ([]byte, error) {
-	backend := pgproto3.NewBackend(conn, conn)
-
 	for range 3 {
-		msg, err := backend.ReceiveStartupMessage()
+		packet, err := readStartupPacket(conn)
+		if err != nil {
+			return nil, fmt.Errorf("receive startup: %w", err)
+		}
+		msg, err := pgproto3.NewBackend(bytes.NewReader(packet), io.Discard).ReceiveStartupMessage()
 		if err != nil {
 			return nil, fmt.Errorf("receive startup: %w", err)
 		}
@@ -195,6 +198,27 @@ func declineEncryptionAndReadStartup(conn net.Conn) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("too many encryption requests before startup")
+}
+
+// maxStartupPacketLen is PostgreSQL's MAX_STARTUP_PACKET_LENGTH.
+const maxStartupPacketLen = 10000
+
+// readStartupPacket reads one length-prefixed startup-phase packet and nothing after it.
+func readStartupPacket(r io.Reader) ([]byte, error) {
+	var head [4]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
+		return nil, err
+	}
+	n := binary.BigEndian.Uint32(head[:])
+	if n < 8 || n > maxStartupPacketLen {
+		return nil, fmt.Errorf("invalid startup packet length %d", n)
+	}
+	packet := make([]byte, n)
+	copy(packet, head[:])
+	if _, err := io.ReadFull(r, packet[4:]); err != nil {
+		return nil, err
+	}
+	return packet, nil
 }
 
 // dialUpstreamRaw opens the upstream connection for the tunnel.

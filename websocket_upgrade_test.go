@@ -361,3 +361,41 @@ func TestHTTPHandlerRelaysSessionToUpstream(t *testing.T) {
 	}
 	assert.Equal(t, "u", pg.StartupParam("user"))
 }
+
+// The driver's default pipelineConnect sends its password in the same message as the startup, before any challenge.
+func TestUpgradeForwardsBytesPipelinedAfterStartup(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+
+	startup := startupBytes(t)
+	password, err := (&pgproto3.PasswordMessage{Password: "secret"}).Encode(nil)
+	require.NoError(t, err)
+	got := make(chan []byte, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		buf := make([]byte, len(startup)+len(password))
+		_, _ = io.ReadFull(c, buf)
+		got <- buf
+	}()
+
+	srv := startWSServer(t, func(echo.Context) (Upstream, error) {
+		return Upstream{Addr: ln.Addr().String(), TLSMode: TLSDisable}, nil
+	})
+	_, _, conn := dialWS(t, srv)
+
+	_, err = conn.Write(append(append([]byte{}, startup...), password...))
+	require.NoError(t, err)
+
+	select {
+	case b := <-got:
+		assert.Equal(t, startup, b[:len(startup)])
+		assert.Equal(t, password, b[len(startup):], "the pipelined password reaches the upstream")
+	case <-time.After(wsTestTimeout):
+		t.Fatal("the bytes pipelined after the startup never reached the upstream")
+	}
+}
