@@ -1197,11 +1197,10 @@ func ConvertParams(params []any) []any {
 			// pgx cannot encode a Go bool into a text or integer parameter, and raw text mode bound it as "t".
 			out[i] = strconv.FormatBool(v)
 		case map[string]any:
-			b, err := json.Marshal(v)
-			if err != nil {
-				out[i] = p
+			if s, ok := jsonObjectText(v); ok {
+				out[i] = s
 			} else {
-				out[i] = string(b)
+				out[i] = p
 			}
 		default:
 			out[i] = p
@@ -1247,11 +1246,23 @@ func formatPgArrayElem(elem any) string {
 	case json.Number:
 		return jsonNumberText(v)
 	case map[string]any:
-		if b, err := json.Marshal(v); err == nil {
-			return quotePgArrayElem(string(b))
+		if s, ok := jsonObjectText(v); ok {
+			return quotePgArrayElem(s)
 		}
 	}
 	return quotePgArrayElem(fmt.Sprintf("%v", elem))
+}
+
+// jsonObjectText renders an object parameter as compact JSON with sorted keys and no HTML escaping, as Neon's serde_json does.
+// json.Marshal writes < as \u003c, which a json or text column stores as those six characters.
+func jsonObjectText(v map[string]any) (string, bool) {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(b.String(), "\n"), true
 }
 
 // formatPgArrayFloat renders a number in a form every PostgreSQL numeric type
