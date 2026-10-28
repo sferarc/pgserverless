@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4
+
+### Patch Changes
+
+- 87c2858: A batch that commits now answers with the transaction characteristics it ran with, as Neon does: `Neon-Batch-Read-Only: true` and `Neon-Batch-Deferrable: true` when they were set, and `Neon-Batch-Isolation-Level` spelled `ReadUncommitted`, `ReadCommitted`, `RepeatableRead` or `Serializable`. A single query, a failed batch and an option sent as `false` carry none of them.
+
 ## 0.2.3
 
 ### Patch Changes
