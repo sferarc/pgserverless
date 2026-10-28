@@ -175,6 +175,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 	if !rawText && br.Close() == nil {
 		splitCatalogArrays(ctx, conn, results)
 	}
+	opts.setResponseHeaders(w.Header())
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 

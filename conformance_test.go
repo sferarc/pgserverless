@@ -1057,3 +1057,101 @@ func TestConformance_BatchNoOptions_NoExplicitBegin(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Empty(t, pg.LastBegin(), "no transaction options => no explicit BEGIN")
 }
+
+// A committed batch echoes the characteristics it ran with, as Neon's proxy does;
+// a single query, a failed batch and an unset or false option carry none.
+func TestConformance_BatchEchoesTransactionHeaders(t *testing.T) {
+	echoed := []string{"Neon-Batch-Read-Only", "Neon-Batch-Deferrable", "Neon-Batch-Isolation-Level"}
+	for _, tc := range []struct {
+		name    string
+		body    string
+		headers map[string]string
+		status  int
+		want    map[string]string
+	}{
+		{
+			name: "all three",
+			body: `{"queries":[{"query":"SELECT 1 AS one"}]}`,
+			headers: map[string]string{
+				"Neon-Batch-Isolation-Level": "Serializable",
+				"Neon-Batch-Read-Only":       "true",
+				"Neon-Batch-Deferrable":      "true",
+			},
+			status: http.StatusOK,
+			want: map[string]string{
+				"Neon-Batch-Isolation-Level": "Serializable",
+				"Neon-Batch-Read-Only":       "true",
+				"Neon-Batch-Deferrable":      "true",
+			},
+		},
+		{
+			name:    "isolation level in another spelling",
+			body:    `{"queries":[{"query":"SELECT 1 AS one"}]}`,
+			headers: map[string]string{"Batch-Isolation-Level": "repeatable read"},
+			status:  http.StatusOK,
+			want:    map[string]string{"Neon-Batch-Isolation-Level": "RepeatableRead"},
+		},
+		{
+			name:    "read only spelled True",
+			body:    `{"queries":[{"query":"SELECT 1 AS one"}]}`,
+			headers: map[string]string{"Neon-Batch-Read-Only": "True"},
+			status:  http.StatusOK,
+			want:    map[string]string{"Neon-Batch-Read-Only": "true"},
+		},
+		{
+			name: "false options",
+			body: `{"queries":[{"query":"SELECT 1 AS one"}]}`,
+			headers: map[string]string{
+				"Neon-Batch-Read-Only":  "false",
+				"Neon-Batch-Deferrable": "false",
+			},
+			status: http.StatusOK,
+		},
+		{
+			name:   "no options",
+			body:   `{"queries":[{"query":"SELECT 1 AS one"}]}`,
+			status: http.StatusOK,
+		},
+		{
+			name:    "single query",
+			body:    `{"query":"SELECT 1 AS one"}`,
+			headers: map[string]string{"Neon-Batch-Read-Only": "true"},
+			status:  http.StatusOK,
+		},
+		{
+			name: "raw text",
+			body: `{"queries":[{"query":"SELECT 1 AS one"}]}`,
+			headers: map[string]string{
+				"Neon-Batch-Read-Only": "true",
+				"Neon-Raw-Text-Output": "true",
+				"Neon-Array-Mode":      "true",
+			},
+			status: http.StatusOK,
+			want:   map[string]string{"Neon-Batch-Read-Only": "true"},
+		},
+		{
+			name:    "rejected write",
+			body:    `{"queries":[{"query":"INSERT INTO orders (id) VALUES (1)"}]}`,
+			headers: map[string]string{"Neon-Batch-Read-Only": "true"},
+			status:  http.StatusBadRequest,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pg := pgfake.New(t)
+			pg.SetResult("SELECT 1 AS one", pgfake.Result{
+				Cols: []pgfake.Col{{Name: "one", TypeOID: oidInt4}},
+				Rows: [][]any{{int32(1)}},
+				Tag:  "SELECT 1",
+			})
+			pg.SetResult("INSERT INTO orders (id) VALUES (1)", pgfake.Result{IsWrite: true, Tag: "INSERT 0 1"})
+			e := newConformanceServer(t, pg)
+
+			rec := doSQL(e, tc.body, tc.headers)
+
+			require.Equal(t, tc.status, rec.Code, rec.Body.String())
+			for _, name := range echoed {
+				assert.Equal(t, tc.want[name], rec.Header().Get(name), name)
+			}
+		})
+	}
+}

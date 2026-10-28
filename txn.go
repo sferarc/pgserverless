@@ -113,6 +113,27 @@ func (o txnOptions) beginSQL() string {
 	return b.String()
 }
 
+// isolationLevelHeader spells each SQL isolation level as the driver's header value.
+var isolationLevelHeader = map[string]string{
+	"READ UNCOMMITTED": "ReadUncommitted",
+	"READ COMMITTED":   "ReadCommitted",
+	"REPEATABLE READ":  "RepeatableRead",
+	"SERIALIZABLE":     "Serializable",
+}
+
+// setResponseHeaders echoes the set characteristics on a committed batch's 200, as Neon's proxy does.
+func (o txnOptions) setResponseHeaders(h http.Header) {
+	if o.readOnly {
+		h.Set("Neon-Batch-Read-Only", "true")
+	}
+	if o.deferrable {
+		h.Set("Neon-Batch-Deferrable", "true")
+	}
+	if level, ok := isolationLevelHeader[o.isolationLevel]; ok {
+		h.Set("Neon-Batch-Isolation-Level", level)
+	}
+}
+
 // isDefault reports whether no transaction characteristics were requested, so
 // the batch can take the plain implicit-transaction pipeline path.
 func (o txnOptions) isDefault() bool {
