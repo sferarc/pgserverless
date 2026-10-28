@@ -1,6 +1,7 @@
 package pgserverless
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -197,6 +198,21 @@ func TestUpgradeIgnoresCancelRequest(t *testing.T) {
 	assert.Zero(t, dials, "a cancel request never reaches the upstream dial")
 }
 
+// readDialFailure reads what the server sends when the upstream dial fails: an ErrorResponse, then the close frame.
+func readDialFailure(t *testing.T, ctx context.Context, ws *websocket.Conn) (*pgproto3.ErrorResponse, error) {
+	t.Helper()
+	typ, frame, err := ws.Read(ctx)
+	require.NoError(t, err, "the client is told why before the tunnel closes")
+	require.Equal(t, websocket.MessageBinary, typ)
+	msg, err := pgproto3.NewFrontend(bytes.NewReader(frame), nil).Receive()
+	require.NoError(t, err)
+	errResp, ok := msg.(*pgproto3.ErrorResponse)
+	require.True(t, ok, "got %T", msg)
+
+	_, _, err = ws.Read(ctx)
+	return errResp, err
+}
+
 func TestUpgradeDialFailureClosesWithReasonAndFiresHook(t *testing.T) {
 	var hooked error
 	srv := startWSServer(t, func(echo.Context) (Upstream, error) { return Upstream{Addr: "127.0.0.1:1"}, nil },
@@ -206,7 +222,10 @@ func TestUpgradeDialFailureClosesWithReasonAndFiresHook(t *testing.T) {
 	_, err := conn.Write(startupBytes(t))
 	require.NoError(t, err)
 
-	_, _, err = ws.Read(ctx)
+	errResp, err := readDialFailure(t, ctx, ws)
+	assert.Equal(t, "FATAL", errResp.Severity)
+	assert.Equal(t, "08006", errResp.Code)
+	assert.Equal(t, "upstream unavailable", errResp.Message)
 	assert.Equal(t, websocket.StatusInternalError, websocket.CloseStatus(err))
 	assert.Contains(t, err.Error(), "upstream unavailable")
 	assert.Error(t, hooked)
@@ -232,7 +251,8 @@ func TestUpgradeRefusesUpstreamWithoutTLS(t *testing.T) {
 	_, err = conn.Write(startupBytes(t))
 	require.NoError(t, err)
 
-	_, _, err = ws.Read(ctx)
+	errResp, err := readDialFailure(t, ctx, ws)
+	assert.Equal(t, "08006", errResp.Code)
 	assert.Equal(t, websocket.StatusInternalError, websocket.CloseStatus(err),
 		"an upstream that declines TLS must not be talked to in the clear")
 }

@@ -32,6 +32,14 @@ const wsSubprotocol = "pg"
 // equivalent, because it is meant to stay open, so only the dial is bounded.
 const dialTimeout = 10 * time.Second
 
+// upstreamUnavailable is sent through the tunnel when the dial fails; class 08 is what client retry logic keys on.
+var upstreamUnavailable, _ = (&pgproto3.ErrorResponse{
+	Severity:            "FATAL",
+	SeverityUnlocalized: "FATAL",
+	Code:                "08006",
+	Message:             "upstream unavailable",
+}).Encode(nil)
+
 // WithWebSocketAdmission sets the Admission consulted on the WebSocket path.
 //
 // It is separate from the HTTP one because the two paths carry a request's
@@ -132,8 +140,8 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 			onDialError(err)
 		}
 		slog.Warn("pgserverless: websocket upstream dial failed", "err", SanitizeError(err.Error()))
-		// The client is already upgraded, so the only channel left is a close
-		// frame. Its reason is what a client surfaces to a developer.
+		// A PostgreSQL client reads only the protocol, so a bare close frame surfaces as "Connection terminated unexpectedly".
+		_, _ = client.Write(upstreamUnavailable)
 		_ = ws.Close(websocket.StatusInternalError, "upstream unavailable")
 		return
 	}
