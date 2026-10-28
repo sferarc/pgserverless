@@ -14,8 +14,14 @@ func QueryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return RowsToResult(rows, conn.TypeMap(), arrayMode, rawText)
+	result, err := RowsToResult(rows, conn.TypeMap(), arrayMode, rawText)
+	rows.Close()
+	if err != nil || rawText {
+		return result, err
+	}
+	results := []QueryResult{*result}
+	splitCatalogArrays(ctx, conn, results)
+	return &results[0], nil
 }
 
 // executeSingle executes a single query and returns the result as JSON.
@@ -63,6 +69,10 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 		results = append(results, *result)
 	}
 
+	// The lookup needs the connection, which the batch holds until it is closed.
+	if !rawText && br.Close() == nil {
+		splitCatalogArrays(ctx, conn, results)
+	}
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 
@@ -137,6 +147,9 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 		return
 	}
 
+	if !rawText && br.Close() == nil {
+		splitCatalogArrays(ctx, conn, results)
+	}
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 
