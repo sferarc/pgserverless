@@ -1175,8 +1175,8 @@ func convertArrayElem(s string, elemTypeOID uint32, wasQuoted bool) any {
 }
 
 // ConvertParams converts query parameters for pgx. Slices are formatted
-// as PG array literals, floats as number text, bools as true or false, and
-// maps/structs are JSON-encoded.
+// as PG array literals, numbers as number text (see jsonNumberText), bools as
+// true or false, and maps/structs are JSON-encoded.
 func ConvertParams(params []any) []any {
 	if len(params) == 0 {
 		return params
@@ -1191,6 +1191,8 @@ func ConvertParams(params []any) []any {
 			out[i] = formatPgFloat(v, 64)
 		case float32:
 			out[i] = formatPgFloat(float64(v), 32)
+		case json.Number:
+			out[i] = jsonNumberText(v)
 		case bool:
 			// pgx cannot encode a Go bool into a text or integer parameter, and raw text mode bound it as "t".
 			out[i] = strconv.FormatBool(v)
@@ -1224,11 +1226,12 @@ func formatPgArray(arr []any) string {
 
 // formatPgArrayElem renders one element of a PG array literal. Elements reach
 // this function as encoding/json decoded the request body, so a JSON number is
-// always a float64 and a JSON array is always a []any, never the Go int or
-// string a hand-written caller might pass. Rendering those with %v produces
-// text PostgreSQL reads back as something other than what the caller sent:
-// float64(1000000) becomes "1e+06", which int[] and int8[] reject with SQLSTATE
-// 22P02, and a nested []any becomes Go's "[1 2]".
+// a json.Number (a float64 for a caller that decodes without UseNumber) and a
+// JSON array is always a []any, never the Go int or string a hand-written
+// caller might pass. Rendering those with %v produces text PostgreSQL reads
+// back as something other than what the caller sent: float64(1000000) becomes
+// "1e+06", which int[] and int8[] reject with SQLSTATE 22P02, and a nested
+// []any becomes Go's "[1 2]".
 func formatPgArrayElem(elem any) string {
 	switch v := elem.(type) {
 	case nil:
@@ -1241,6 +1244,8 @@ func formatPgArrayElem(elem any) string {
 		return formatPgArrayFloat(v)
 	case float32:
 		return formatPgArrayFloat(float64(v))
+	case json.Number:
+		return jsonNumberText(v)
 	case map[string]any:
 		if b, err := json.Marshal(v); err == nil {
 			return quotePgArrayElem(string(b))
@@ -1258,6 +1263,25 @@ func formatPgArrayElem(elem any) string {
 func formatPgArrayFloat(f float64) string {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return `"` + formatPgFloat(f, 64) + `"`
+	}
+	return formatPgFloat(f, 64)
+}
+
+// jsonNumberText renders a JSON number parameter as PostgreSQL number text.
+// An integer keeps the digits the client sent, as Neon binds it, because a
+// float64 rounds 9007199254740993 to 9007199254740992 and an int8 id sent as a
+// number then matched a different row. Any other number keeps formatPgFloat's
+// spelling, so 1e6 still binds as 1000000 into an integer parameter. A number
+// float64 cannot hold at all (1e400) is passed through for PostgreSQL to judge:
+// numeric stores it exactly and float8 rejects it with 22003.
+func jsonNumberText(n json.Number) string {
+	s := n.String()
+	if !strings.ContainsAny(s, ".eE") {
+		return s
+	}
+	f, err := n.Float64()
+	if err != nil {
+		return s
 	}
 	return formatPgFloat(f, 64)
 }

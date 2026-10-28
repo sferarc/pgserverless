@@ -330,7 +330,10 @@ func writeAdmissionError(w http.ResponseWriter, err error) {
 // request is well formed, serveSQL decides what to do with a well formed one.
 func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 	var req SQLRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	// A float64 rounds an integer past 2^53, so a bigint id sent as a JSON number bound as a different id.
+	dec.UseNumber()
+	if err := dec.Decode(&req); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return nil, fmt.Errorf("%w (max is %d bytes)", ErrRequestTooLarge, MaxRequestBodyBytes)
 		}
