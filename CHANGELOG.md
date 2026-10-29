@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.6
+
+### Patch Changes
+
+- 6823ed8: A `POST /sql` statement whose request ends, by the 30 second query timeout or the client going away, is now cancelled on the database with a CancelRequest instead of being left running after the connection is cut. The response is Neon's: status 400 with `{"message":"Query cancelled, connection was terminated","code":"08P01"}`, where it used to be 504 `upstream connection timed out`. `Dial` connections get the same cancel.
+- 2052ba5: A native-mode batch (no `Neon-Raw-Text-Output`) now runs its statements in order inside one transaction, as Neon does, so an item can use a table an earlier item creates. It used to prepare every statement before running the first and failed such a batch with `42P01`. Raw-text batches, which the driver sends, are unchanged.
+
 ## 0.2.5
 
 ### Patch Changes
