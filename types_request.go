@@ -16,7 +16,8 @@ type QueryItem struct {
 	ArrayMode *bool  `json:"arrayMode,omitempty"`
 }
 
-// QueryResult is the JSON response for a single query execution.
+// QueryResult is the JSON response for a single query execution. Each of Rows
+// is a []any when RowAsArray is set and an ObjectRow otherwise.
 type QueryResult struct {
 	Fields     []FieldDefinition `json:"fields"`
 	Command    string            `json:"command"`

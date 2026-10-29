@@ -264,7 +264,9 @@ func RowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool) (*Query
 func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget *responseBudget) (*QueryResult, error) {
 	descs := rows.FieldDescriptions()
 	fields := make([]FieldDefinition, len(descs))
+	names := make([]string, len(descs))
 	for i, d := range descs {
+		names[i] = d.Name
 		fields[i] = FieldDefinition{
 			Name:             d.Name,
 			TableID:          d.TableOID,
@@ -289,11 +291,7 @@ func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget 
 		if arrayMode {
 			resultRows = append(resultRows, values)
 		} else {
-			row := make(map[string]any, len(descs))
-			for i, d := range descs {
-				row[d.Name] = values[i]
-			}
-			resultRows = append(resultRows, row)
+			resultRows = append(resultRows, ObjectRow{Names: names, Values: values})
 		}
 	}
 	if err := rows.Err(); err != nil {

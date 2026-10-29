@@ -134,15 +134,18 @@ func TestConformance_CatalogArraysInBatches(t *testing.T) {
 	}
 }
 
-// In object mode the later of two same-named columns is the one in the row.
-func TestResultCellSkipsAShadowedColumn(t *testing.T) {
-	r := &QueryResult{Fields: []FieldDefinition{{Name: "a"}, {Name: "a"}}}
-	row := map[string]any{"a": "{x}"}
-	_, ok := resultCell(r, row, 0)
-	assert.False(t, ok)
-	v, ok := resultCell(r, row, 1)
+// An object-mode row keeps both of two same-named columns, so each is split on its own.
+func TestResultCellReadsEachSameNamedColumn(t *testing.T) {
+	row := ObjectRow{Names: []string{"a", "a"}, Values: []any{"{x}", "{y}"}}
+	setResultCell(row, 0, []any{"x"})
+	v, ok := resultCell(row, 0)
 	assert.True(t, ok)
-	assert.Equal(t, "{x}", v)
+	assert.Equal(t, []any{"x"}, v)
+	v, ok = resultCell(row, 1)
+	assert.True(t, ok)
+	assert.Equal(t, "{y}", v)
+	_, ok = resultCell(row, 2)
+	assert.False(t, ok)
 }
 
 // PostgreSQL describes a domain column as its base type, so a domain over an

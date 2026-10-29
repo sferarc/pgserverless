@@ -82,7 +82,7 @@ func catalogArrayElems(ctx context.Context, conn *pgx.Conn, oids []uint32) (map[
 
 func columnHasArrayLiteral(r *QueryResult, col int) bool {
 	for _, row := range r.Rows {
-		v, ok := resultCell(r, row, col)
+		v, ok := resultCell(row, col)
 		if !ok {
 			continue
 		}
@@ -100,43 +100,38 @@ func splitResultArrays(r *QueryResult, elems map[uint32]uint32) {
 			continue
 		}
 		for _, row := range r.Rows {
-			v, ok := resultCell(r, row, col)
+			v, ok := resultCell(row, col)
 			if !ok {
 				continue
 			}
 			if split, ok := textArrayElems(v, elemOID); ok {
-				setResultCell(r, row, col, split)
+				setResultCell(row, col, split)
 			}
 		}
 	}
 }
 
-// resultCell reads column col of row. In object mode a column whose name a
-// later column repeats is not in the row, since the later value replaced it.
-func resultCell(r *QueryResult, row any, col int) (any, bool) {
-	switch row := row.(type) {
-	case []any:
-		if col < len(row) {
-			return row[col], true
-		}
-	case map[string]any:
-		name := r.Fields[col].Name
-		for _, later := range r.Fields[col+1:] {
-			if later.Name == name {
-				return nil, false
-			}
-		}
-		v, ok := row[name]
-		return v, ok
+// resultCell reads column col of row.
+func resultCell(row any, col int) (any, bool) {
+	vals := rowCells(row)
+	if col < len(vals) {
+		return vals[col], true
 	}
 	return nil, false
 }
 
-func setResultCell(r *QueryResult, row any, col int, v any) {
+func setResultCell(row any, col int, v any) {
+	if vals := rowCells(row); col < len(vals) {
+		vals[col] = v
+	}
+}
+
+func rowCells(row any) []any {
 	switch row := row.(type) {
 	case []any:
-		row[col] = v
-	case map[string]any:
-		row[r.Fields[col].Name] = v
+		return row
+	case ObjectRow:
+		return row.Values
 	}
+	return nil
 }
