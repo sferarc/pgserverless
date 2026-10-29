@@ -158,6 +158,7 @@ Everything after that decision (parse the body, dial, run, coerce, encode) is th
 - On the WebSocket path only `Addr`, `ServerName`, `InsecureSkipVerify` and `TLSMode` of the returned `Upstream` are used. User, password and database come from the client's own startup message.
 - Each HTTP request opens a connection to the database and closes it. There is no pooling; put a pooler in front of the database if it cannot take that. The driver's `Pool-Opt-In` header is accepted and ignored.
 - The upstream dial uses TLS unless `Upstream.TLSMode` is `TLSDisable`. `StaticUpstream` does not set it.
+- The `POST /sql` dial reaches only the `Upstream` admission returned. The server process's own libpq environment (`PGHOST`, `PGPORT`, `PGTZ`, `PGOPTIONS`, `PGAPPNAME`, `PGTARGETSESSIONATTRS` and the rest) is ignored, so it adds no fallback host and no session setting.
 - A WebSocket `CancelRequest` is forwarded to the upstream that admission resolves for its connection. The tunnel keeps no session state, so the key the client holds is the upstream's own and any instance can deliver it.
 - The tunnel does not check the `Origin` header. `Admission` is the authentication point.
 - The tunnel bounds the client's startup (30 seconds from the upgrade to its StartupMessage) and the upstream dial (10 seconds). An open session has no time limit.

@@ -199,6 +199,15 @@ func Dial(ctx context.Context, up Upstream, simpleProtocol bool) (*pgx.Conn, err
 
 // dial opens a connection to up that runs queries in mode; zero keeps pgx's default.
 func dial(ctx context.Context, up Upstream, mode pgx.QueryExecMode) (*pgx.Conn, error) {
+	cfg, err := upstreamConfig(up, mode)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
+// upstreamConfig is the pgx configuration for one connection to up and nothing else.
+func upstreamConfig(up Upstream, mode pgx.QueryExecMode) (*pgx.ConnConfig, error) {
 	host, portStr := parseHostPort(up.Addr)
 	if host == "" {
 		host = "127.0.0.1"
@@ -209,6 +218,16 @@ func dial(ctx context.Context, up Upstream, mode pgx.QueryExecMode) (*pgx.Conn, 
 	if err != nil {
 		return nil, err
 	}
+	// ParseConfig("") also applies this process's own libpq environment (PGHOST, PGTZ, PGOPTIONS, ...); none of it is the client's.
+	cfg.Fallbacks = nil
+	cfg.RuntimeParams = map[string]string{}
+	cfg.ValidateConnect = nil
+	cfg.ConnectTimeout = 0
+	cfg.SSLNegotiation = ""
+	cfg.ChannelBinding = "prefer"
+	cfg.RequireAuth = ""
+	cfg.MinProtocolVersion = "3.0"
+	cfg.MaxProtocolVersion = "3.0"
 	cfg.Host = host
 	cfg.Port = uint16(port)
 	cfg.User = up.User
@@ -236,7 +255,7 @@ func dial(ctx context.Context, up Upstream, mode pgx.QueryExecMode) (*pgx.Conn, 
 	cfg.BuildContextWatcherHandler = func(c *pgconn.PgConn) ctxwatch.Handler {
 		return &pgconn.CancelRequestContextWatcherHandler{Conn: c, DeadlineDelay: cancelGrace}
 	}
-	return pgx.ConnectConfig(ctx, cfg)
+	return cfg, nil
 }
 
 // Query handles one serverless HTTP SQL request: single statement or batch,
