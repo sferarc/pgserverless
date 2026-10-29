@@ -1,6 +1,7 @@
 package pgserverless
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"testing"
@@ -25,7 +26,7 @@ func TestStartupDeclinesSSLRequestThenReadsStartup(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		b, err := declineEncryptionAndReadStartup(server)
+		b, _, err := declineEncryptionAndReadStartup(server)
 		done <- result{b, err}
 	}()
 
@@ -84,7 +85,7 @@ func TestStartupDeclinesTwiceBeforeStartup(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := declineEncryptionAndReadStartup(server)
+		_, _, err := declineEncryptionAndReadStartup(server)
 		done <- err
 	}()
 
@@ -123,25 +124,23 @@ func TestStartupDeclinesTwiceBeforeStartup(t *testing.T) {
 	}
 }
 
-// TestStartupReportsCancelRequest pins the contract that a CancelRequest
-// returns no startup and no error, which is how the caller tells "ignore this
-// connection" from "something went wrong".
+// TestStartupReportsCancelRequest pins that a CancelRequest comes back marked,
+// with its packet intact, since the caller forwards those bytes to the upstream.
 func TestStartupReportsCancelRequest(t *testing.T) {
 	t.Parallel()
 
 	client, server := net.Pipe()
 	t.Cleanup(func() { client.Close(); server.Close() })
 
-	done := make(chan struct {
-		b   []byte
-		err error
-	}, 1)
+	type result struct {
+		b      []byte
+		cancel bool
+		err    error
+	}
+	done := make(chan result, 1)
 	go func() {
-		b, err := declineEncryptionAndReadStartup(server)
-		done <- struct {
-			b   []byte
-			err error
-		}{b, err}
+		b, cancel, err := declineEncryptionAndReadStartup(server)
+		done <- result{b, cancel, err}
 	}()
 
 	enc, _ := (&pgproto3.CancelRequest{ProcessID: 42, SecretKey: []byte{0, 0, 0, 7}}).Encode(nil)
@@ -152,8 +151,11 @@ func TestStartupReportsCancelRequest(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("cancel request reported an error: %v", r.err)
 		}
-		if r.b != nil {
-			t.Fatalf("cancel request returned a startup message: %q", r.b)
+		if !r.cancel {
+			t.Fatal("cancel request was not marked as one")
+		}
+		if !bytes.Equal(r.b, enc) {
+			t.Fatalf("cancel packet changed: got %x, want %x", r.b, enc)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancel request did not finish")
@@ -171,7 +173,7 @@ func TestStartupRefusesEndlessEncryptionRequests(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := declineEncryptionAndReadStartup(server)
+		_, _, err := declineEncryptionAndReadStartup(server)
 		done <- err
 	}()
 
@@ -207,7 +209,7 @@ func TestStartupRefusesOversizedPacket(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := declineEncryptionAndReadStartup(server)
+		_, _, err := declineEncryptionAndReadStartup(server)
 		done <- err
 	}()
 

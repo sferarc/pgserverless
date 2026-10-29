@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,10 +184,69 @@ func TestUpgradeUsesTheWebSocketAdmissionWhenSet(t *testing.T) {
 	assert.Zero(t, httpCalls)
 }
 
-func TestUpgradeIgnoresCancelRequest(t *testing.T) {
-	dials := 0
+// openWSSession runs the startup through the tunnel and returns the session with the key the upstream issued.
+func openWSSession(t *testing.T, srv *httptest.Server) (*pgproto3.Frontend, *pgproto3.BackendKeyData) {
+	t.Helper()
+	_, _, conn := dialWS(t, srv)
+	_, err := conn.Write(append(sslRequestBytes(t), startupBytes(t)...))
+	require.NoError(t, err)
+	_, err = io.ReadFull(conn, make([]byte, 1))
+	require.NoError(t, err)
+
+	fe := pgproto3.NewFrontend(conn, conn)
+	var key *pgproto3.BackendKeyData
+	for {
+		msg, err := fe.Receive()
+		require.NoError(t, err)
+		if k, ok := msg.(*pgproto3.BackendKeyData); ok {
+			key = &pgproto3.BackendKeyData{ProcessID: k.ProcessID, SecretKey: bytes.Clone(k.SecretKey)}
+		}
+		if _, ok := msg.(*pgproto3.ReadyForQuery); ok {
+			break
+		}
+	}
+	require.NotNil(t, key, "the upstream issued no BackendKeyData")
+	return fe, key
+}
+
+func TestUpgradeForwardsCancelRequestToTheUpstream(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT pg_sleep(60)", pgfake.Result{WaitForCancel: true})
+	srv := startWSServer(t, fakeUpstream(pg))
+
+	fe, key := openWSSession(t, srv)
+	fe.Send(&pgproto3.Query{String: "SELECT pg_sleep(60)"})
+	require.NoError(t, fe.Flush())
+
+	// The driver cancels on a second connection, which is a second WebSocket.
+	_, _, cancelConn := dialWS(t, srv)
+	b, err := (&pgproto3.CancelRequest{ProcessID: key.ProcessID, SecretKey: key.SecretKey}).Encode(nil)
+	require.NoError(t, err)
+	_, err = cancelConn.Write(b)
+	require.NoError(t, err)
+	rest, _ := io.ReadAll(cancelConn)
+	assert.Empty(t, rest, "PostgreSQL answers a CancelRequest with nothing")
+
+	var pgErr *pgproto3.ErrorResponse
+	for {
+		msg, err := fe.Receive()
+		require.NoError(t, err)
+		if e, ok := msg.(*pgproto3.ErrorResponse); ok {
+			pgErr = e
+		}
+		if _, ok := msg.(*pgproto3.ReadyForQuery); ok {
+			break
+		}
+	}
+	require.NotNil(t, pgErr, "the statement was not cancelled")
+	assert.Equal(t, "57014", pgErr.Code)
+	assert.Equal(t, 1, pg.CancelRequests())
+}
+
+func TestUpgradeCancelRequestToAnUnreachableUpstreamAnswersNothing(t *testing.T) {
+	var dials atomic.Int32
 	srv := startWSServer(t, func(echo.Context) (Upstream, error) { return Upstream{Addr: "127.0.0.1:1"}, nil },
-		WithDialErrorHook(func(echo.Context, error) { dials++ }))
+		WithDialErrorHook(func(echo.Context, error) { dials.Add(1) }))
 	_, _, conn := dialWS(t, srv)
 
 	b, err := (&pgproto3.CancelRequest{ProcessID: 1, SecretKey: []byte{0, 0, 0, 1}}).Encode(nil)
@@ -194,8 +254,9 @@ func TestUpgradeIgnoresCancelRequest(t *testing.T) {
 	_, err = conn.Write(b)
 	require.NoError(t, err)
 
-	_, _ = io.ReadAll(conn) // returns once the server drops the connection
-	assert.Zero(t, dials, "a cancel request never reaches the upstream dial")
+	rest, _ := io.ReadAll(conn) // returns once the server drops the connection
+	assert.Empty(t, rest, "a cancel connection gets no FATAL, as PostgreSQL sends none")
+	assert.Equal(t, int32(1), dials.Load())
 }
 
 // readDialFailure reads what the server sends when the upstream dial fails: an ErrorResponse, then the close frame.

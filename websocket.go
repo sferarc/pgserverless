@@ -123,16 +123,9 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 	// be rejected as invalid UTF-8 by a conforming client.
 	client := websocket.NetConn(ctx, ws, websocket.MessageBinary)
 
-	startup, err := declineEncryptionAndReadStartup(client)
+	startup, cancel, err := declineEncryptionAndReadStartup(client)
 	if err != nil {
 		slog.Warn("pgserverless: websocket startup failed", "err", err)
-		return
-	}
-	if startup == nil {
-		// CancelRequest. Section 9 permits ignoring it: cancellation arrives
-		// on a second connection, which a scale-to-zero or anycast deployment
-		// may route somewhere with no knowledge of the first.
-		slog.Debug("pgserverless: websocket cancel request ignored")
 		return
 	}
 
@@ -142,12 +135,22 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 			onDialError(err)
 		}
 		slog.Warn("pgserverless: websocket upstream dial failed", "err", SanitizeError(err.Error()))
+		if cancel {
+			// PostgreSQL answers a CancelRequest with nothing, so its client reads nothing either.
+			return
+		}
 		// A PostgreSQL client reads only the protocol, so a bare close frame surfaces as "Connection terminated unexpectedly".
 		_, _ = client.Write(upstreamUnavailable)
 		_ = ws.Close(websocket.StatusInternalError, "upstream unavailable")
 		return
 	}
 	defer server.Close()
+
+	if cancel {
+		// The relay keeps no session state: the key the client holds is the upstream's own, so any instance can deliver it.
+		deliverCancel(server, startup)
+		return
+	}
 
 	// Forward the startup the client already sent. It was consumed to get here,
 	// so the upstream never sees it unless it is replayed.
@@ -161,8 +164,8 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 
 // declineEncryptionAndReadStartup runs the startup phase on the client side.
 //
-// It returns the encoded StartupMessage to forward, or nil when the client sent
-// a CancelRequest instead.
+// It returns the encoded packet to forward: the StartupMessage, or the
+// CancelRequest with the bool set.
 //
 // Two things here are not obvious. The client defaults to pipelining its first
 // messages, so the bytes after the startup (its password) may arrive in the
@@ -170,15 +173,15 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 // and no further, leaving the rest on conn for the relay; a pgproto3.Backend
 // over conn buffers ahead and dropped them. And a client may send SSLRequest
 // and GSSEncRequest in sequence, so declining once is not enough.
-func declineEncryptionAndReadStartup(conn net.Conn) ([]byte, error) {
+func declineEncryptionAndReadStartup(conn net.Conn) ([]byte, bool, error) {
 	for range 3 {
 		packet, err := readStartupPacket(conn)
 		if err != nil {
-			return nil, fmt.Errorf("receive startup: %w", err)
+			return nil, false, fmt.Errorf("receive startup: %w", err)
 		}
 		msg, err := pgproto3.NewBackend(bytes.NewReader(packet), io.Discard).ReceiveStartupMessage()
 		if err != nil {
-			return nil, fmt.Errorf("receive startup: %w", err)
+			return nil, false, fmt.Errorf("receive startup: %w", err)
 		}
 
 		switch m := msg.(type) {
@@ -187,17 +190,30 @@ func declineEncryptionAndReadStartup(conn net.Conn) ([]byte, error) {
 			// carries it, and the client's default configuration expects this
 			// answer.
 			if _, err := conn.Write([]byte{'N'}); err != nil {
-				return nil, fmt.Errorf("decline encryption: %w", err)
+				return nil, false, fmt.Errorf("decline encryption: %w", err)
 			}
 		case *pgproto3.CancelRequest:
-			return nil, nil
+			return packet, true, nil
 		case *pgproto3.StartupMessage:
-			return m.Encode(nil)
+			b, err := m.Encode(nil)
+			return b, false, err
 		default:
-			return nil, fmt.Errorf("unexpected startup message %T", msg)
+			return nil, false, fmt.Errorf("unexpected startup message %T", msg)
 		}
 	}
-	return nil, errors.New("too many encryption requests before startup")
+	return nil, false, errors.New("too many encryption requests before startup")
+}
+
+// deliverCancel sends a CancelRequest packet and waits, bounded by dialTimeout,
+// for the upstream to close the connection, which is how PostgreSQL says it has
+// acted on it (libpq's PQcancel waits the same way).
+func deliverCancel(server net.Conn, packet []byte) {
+	_ = server.SetDeadline(time.Now().Add(dialTimeout))
+	if _, err := server.Write(packet); err != nil {
+		slog.Warn("pgserverless: forwarding cancel request failed", "err", err)
+		return
+	}
+	_, _ = io.Copy(io.Discard, server)
 }
 
 // maxStartupPacketLen is PostgreSQL's MAX_STARTUP_PACKET_LENGTH.
