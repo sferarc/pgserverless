@@ -54,6 +54,9 @@ func stdlibWSHandler(admit Admission, opts ...Option) http.Handler {
 	if cfg.admitWS != nil {
 		hopts = append(hopts, WithHTTPWebSocketAdmission(bind(cfg.admitWS)))
 	}
+	if cfg.startupTimeout != 0 {
+		hopts = append(hopts, func(h *httpHandler) { h.startupTimeout = cfg.startupTimeout })
+	}
 	if cfg.onDialError != nil {
 		hopts = append(hopts, WithHTTPDialErrorHook(func(r *http.Request, err error) {
 			cfg.onDialError(e.NewContext(r, nil), err)
@@ -459,4 +462,84 @@ func TestUpgradeForwardsBytesPipelinedAfterStartup(t *testing.T) {
 	case <-time.After(wsTestTimeout):
 		t.Fatal("the bytes pipelined after the startup never reached the upstream")
 	}
+}
+
+const shortStartupTimeout = 200 * time.Millisecond
+
+func withStartupTimeout(d time.Duration) Option {
+	return func(h *Handler) { h.startupTimeout = d }
+}
+
+func TestUpgradeClosesAClientThatNeverSendsItsStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first func(t *testing.T, conn net.Conn)
+	}{
+		{"silent after the upgrade", func(*testing.T, net.Conn) {}},
+		{"silent after declining TLS", func(t *testing.T, conn net.Conn) {
+			_, err := conn.Write(sslRequestBytes(t))
+			require.NoError(t, err)
+			_, err = io.ReadFull(conn, make([]byte, 1))
+			require.NoError(t, err)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			t.Cleanup(func() { ln.Close() })
+			var dialed atomic.Bool
+			go func() {
+				if c, err := ln.Accept(); err == nil {
+					dialed.Store(true)
+					c.Close()
+				}
+			}()
+			srv := startWSServer(t, func(echo.Context) (Upstream, error) {
+				return Upstream{Addr: ln.Addr().String(), TLSMode: TLSDisable}, nil
+			}, withStartupTimeout(shortStartupTimeout))
+			ctx, ws, conn := dialWS(t, srv)
+			tc.first(t, conn)
+
+			closed := make(chan error, 1)
+			go func() {
+				_, _, err := ws.Read(ctx)
+				closed <- err
+			}()
+			select {
+			case err := <-closed:
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, context.DeadlineExceeded, "the server, not the test, ended the tunnel")
+			case <-time.After(wsTestTimeout / 2):
+				t.Fatal("the tunnel stayed open for a client that never sent its startup")
+			}
+			assert.False(t, dialed.Load(), "a tunnel without a startup must not reach the upstream")
+		})
+	}
+}
+
+func TestUpgradeStartupDeadlineEndsWithTheStartup(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT 42 AS n", pgfake.Result{
+		Cols: []pgfake.Col{{Name: "n", TypeOID: oidInt4}},
+		Rows: [][]any{{int32(42)}},
+		Tag:  "SELECT 1",
+	})
+	fe, _ := openWSSession(t, startWSServer(t, fakeUpstream(pg), withStartupTimeout(shortStartupTimeout)))
+
+	time.Sleep(3 * shortStartupTimeout)
+
+	fe.Send(&pgproto3.Query{String: "SELECT 42 AS n"})
+	require.NoError(t, fe.Flush())
+	var row []byte
+	for {
+		msg, err := fe.Receive()
+		require.NoError(t, err, "an idle session outlived the startup deadline")
+		if dr, ok := msg.(*pgproto3.DataRow); ok {
+			row = dr.Values[0]
+		}
+		if _, ok := msg.(*pgproto3.ReadyForQuery); ok {
+			break
+		}
+	}
+	assert.Equal(t, "42", string(row))
 }

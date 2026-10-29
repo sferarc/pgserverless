@@ -168,6 +168,7 @@ type Handler struct {
 	onDialError      func(c echo.Context, err error)
 	countStatements  func(sql string) (int, error)
 	maxResponseBytes int64
+	startupTimeout   time.Duration
 }
 
 // NewHandler returns a Handler that admits requests through admit.

@@ -34,6 +34,9 @@ const wsSubprotocol = "pg"
 // equivalent, because it is meant to stay open, so only the dial is bounded.
 const dialTimeout = 10 * time.Second
 
+// startupTimeout bounds how long a client may take, after the upgrade, to send its StartupMessage.
+const startupTimeout = 30 * time.Second
+
 // upstreamUnavailable is sent through the tunnel when the dial fails; class 08 is what client retry logic keys on.
 var upstreamUnavailable, _ = (&pgproto3.ErrorResponse{
 	Severity:            "FATAL",
@@ -85,12 +88,13 @@ func (h *Handler) Upgrade(c echo.Context) error {
 	if admit == nil {
 		admit = h.admit
 	}
-	serveWebSocket(c.Response(), c.Request(), func() (Upstream, error) { return admit(c) }, h.dialErrorFor(c))
+	serveWebSocket(c.Response(), c.Request(), func() (Upstream, error) { return admit(c) }, h.dialErrorFor(c), h.startupTimeout)
 	return nil
 }
 
 // serveWebSocket is the transport-independent core of GET /v2.
-func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error)) {
+// A zero startupWait allows startupTimeout.
+func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), startupWait time.Duration) {
 	ctx := r.Context()
 
 	// Admission runs BEFORE the upgrade, so a refusal is an ordinary HTTP
@@ -123,11 +127,17 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 	// be rejected as invalid UTF-8 by a conforming client.
 	client := websocket.NetConn(ctx, ws, websocket.MessageBinary)
 
+	// The upgrade has left net/http's timeouts behind, so a client that never sends its startup would hold the tunnel forever.
+	if startupWait <= 0 {
+		startupWait = startupTimeout
+	}
+	_ = client.SetReadDeadline(time.Now().Add(startupWait))
 	startup, cancel, err := declineEncryptionAndReadStartup(client)
 	if err != nil {
 		slog.Warn("pgserverless: websocket startup failed", "err", err)
 		return
 	}
+	_ = client.SetReadDeadline(time.Time{})
 
 	server, err := dialUpstreamRaw(ctx, up)
 	if err != nil {

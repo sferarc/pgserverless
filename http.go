@@ -1,6 +1,9 @@
 package pgserverless
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 // HTTPAdmission is Admission for net/http: it sees the plain *http.Request and
 // returns where the request should run, or an error that refuses it. The error
@@ -48,6 +51,7 @@ type httpHandler struct {
 	countStatements  func(sql string) (int, error)
 	maxResponseBytes int64
 	corsOrigins      []string
+	startupTimeout   time.Duration
 }
 
 // NewHTTPHandler returns an http.Handler serving POST /sql and GET /v2, with
@@ -82,7 +86,7 @@ func (h *httpHandler) upgrade(w http.ResponseWriter, r *http.Request) {
 	if admit == nil {
 		admit = h.admit
 	}
-	serveWebSocket(w, r, func() (Upstream, error) { return admit(r) }, h.dialErrorFor(r))
+	serveWebSocket(w, r, func() (Upstream, error) { return admit(r) }, h.dialErrorFor(r), h.startupTimeout)
 }
 
 func (h *httpHandler) dialErrorFor(r *http.Request) func(error) {
