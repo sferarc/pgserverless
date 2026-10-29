@@ -41,12 +41,17 @@ func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, q
 }
 
 // executeBatch executes multiple queries in a transaction and returns all
-// results. When the driver requested explicit transaction characteristics
-// (read-only / isolation level / deferrable) the batch is wrapped in an
-// explicit BEGIN … COMMIT so PostgreSQL applies and enforces them; otherwise it
-// runs as a single implicit-transaction pipeline (pgx.SendBatch). A capped
-// batch always takes the explicit path, as Neon's does, so a 507 can roll it back.
+// results. A native-mode batch runs one statement at a time (executeBatchInOrder).
+// A raw-text batch with explicit transaction characteristics (read-only /
+// isolation level / deferrable) is wrapped in an explicit BEGIN … COMMIT so
+// PostgreSQL applies and enforces them; otherwise it runs as a single
+// implicit-transaction pipeline (pgx.SendBatch). A capped batch always takes
+// the explicit path, as Neon's does, so a 507 can roll it back.
 func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
+	if !rawText {
+		executeBatchInOrder(w, conn, ctx, queries, arrayMode, opts, budget)
+		return
+	}
 	if !opts.isDefault() || budget.capped() {
 		executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts, budget)
 		return
@@ -76,10 +81,6 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 		results = append(results, *result)
 	}
 
-	// The lookup needs the connection, which the batch holds until it is closed.
-	if !rawText && br.Close() == nil {
-		splitCatalogArrays(ctx, conn, results)
-	}
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 
@@ -172,9 +173,46 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 		return
 	}
 
-	if !rawText && br.Close() == nil {
-		splitCatalogArrays(ctx, conn, results)
+	opts.setResponseHeaders(w.Header())
+	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
+}
+
+// executeBatchInOrder runs a native-mode batch inside one explicit transaction,
+// each statement prepared only after the one before it has run, as Neon runs
+// every batch. pgx's cached-statement batch prepares all of them first, so an
+// item using a table an earlier item creates failed with 42P01. Any failure
+// returns with the transaction open, and closing the connection rolls it back.
+func executeBatchInOrder(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode bool, opts txnOptions, budget *responseBudget) {
+	if _, err := conn.Exec(ctx, opts.beginSQL()); err != nil {
+		writeQueryError(ctx, w, err)
+		return
 	}
+
+	results := make([]QueryResult, 0, len(queries))
+	for _, q := range queries {
+		rows, err := conn.Query(ctx, q.Query, ConvertParams(q.Params)...)
+		if err != nil {
+			writeQueryError(ctx, w, err)
+			return
+		}
+		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(q, arrayMode), false, budget)
+		if errors.Is(err, ErrResponseTooLarge) {
+			// Closing stops an oversized result instead of draining it.
+			_ = conn.Close(ctx)
+		}
+		rows.Close()
+		if err != nil {
+			writeQueryError(ctx, w, err)
+			return
+		}
+		results = append(results, *result)
+	}
+
+	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+		writeQueryError(ctx, w, err)
+		return
+	}
+	splitCatalogArrays(ctx, conn, results)
 	opts.setResponseHeaders(w.Header())
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }

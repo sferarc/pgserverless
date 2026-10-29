@@ -1042,8 +1042,8 @@ func TestConformance_BatchReadOnly_UnreadableValue(t *testing.T) {
 	assert.Contains(t, errResp.Message, "Batch-Read-Only")
 }
 
-// A batch with no transaction options takes the plain implicit-transaction
-// pipeline (no explicit BEGIN), preserving the prior fast path.
+// A raw-text batch with no transaction options takes the plain
+// implicit-transaction pipeline (no explicit BEGIN), the driver's fast path.
 func TestConformance_BatchNoOptions_NoExplicitBegin(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT 1 AS one", pgfake.Result{
@@ -1053,7 +1053,7 @@ func TestConformance_BatchNoOptions_NoExplicitBegin(t *testing.T) {
 	})
 	e := newConformanceServer(t, pg)
 
-	rec := doSQL(e, `{"queries":[{"query":"SELECT 1 AS one"}]}`, nil)
+	rec := doSQL(e, `{"queries":[{"query":"SELECT 1 AS one"}]}`, map[string]string{"Neon-Raw-Text-Output": "true"})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Empty(t, pg.LastBegin(), "no transaction options => no explicit BEGIN")
 }

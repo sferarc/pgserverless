@@ -81,6 +81,8 @@ type Result struct {
 	ParamOIDs []uint32
 	// WaitForCancel holds the statement until a CancelRequest for its session arrives, then fails it with 57014 as PostgreSQL does.
 	WaitForCancel bool
+	// Requires is a statement creating an object this one uses; until the session has run it, Parse and Execute fail with 42P01.
+	Requires string
 }
 
 // Col describes one result column.
@@ -262,6 +264,8 @@ type session struct {
 	aborted  bool     // an error occurred; skip messages until the next Sync
 	pending  []string // IsWrite statements run since the transaction began
 
+	ran map[string]bool // statements this session has run without error
+
 	cancelled chan struct{} // closed by a CancelRequest for this session
 }
 
@@ -343,7 +347,7 @@ func (f *PG) handle(conn net.Conn) {
 		return
 	}
 
-	s := &session{statements: map[string]string{}, cancelled: cancelled}
+	s := &session{statements: map[string]string{}, cancelled: cancelled, ran: map[string]bool{}}
 
 	for {
 		msg, err := be.Receive()
@@ -402,6 +406,11 @@ func (f *PG) handle(conn net.Conn) {
 					Code:     "42601",
 					Message:  "cannot insert multiple commands into a prepared statement",
 				})
+				break
+			}
+			if res, ok := f.resultFor(m.Query); ok && res.Requires != "" && !s.ran[res.Requires] {
+				s.aborted = true
+				be.Send(missingRelation(res.Requires))
 				break
 			}
 			s.statements[m.Name] = m.Query
@@ -541,6 +550,11 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 		be.Send(res.PgError)
 		return
 	}
+	if res.Requires != "" && !s.ran[res.Requires] {
+		s.aborted = true
+		be.Send(missingRelation(res.Requires))
+		return
+	}
 	if res.WaitForCancel {
 		_ = be.Flush()
 		select {
@@ -554,6 +568,7 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 	if res.IsWrite {
 		s.pending = append(s.pending, sql)
 	}
+	s.ran[sql] = true
 	if sendRowDesc && len(res.Cols) > 0 {
 		be.Send(rowDescription(res.Cols))
 	}
@@ -565,6 +580,11 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 		Tag = "SELECT " + itoa(len(res.Rows))
 	}
 	be.Send(&pgproto3.CommandComplete{CommandTag: []byte(Tag)})
+}
+
+// missingRelation is PostgreSQL's answer for a statement naming an object that does not exist yet.
+func missingRelation(requires string) *pgproto3.ErrorResponse {
+	return &pgproto3.ErrorResponse{Severity: "ERROR", Code: "42P01", Message: "relation does not exist (created by " + requires + ")"}
 }
 
 // writeVerb extracts the leading SQL verb (INSERT/UPDATE/DELETE/...) for the
