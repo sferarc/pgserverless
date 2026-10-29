@@ -25,11 +25,12 @@ type QueryResult struct {
 	RowAsArray bool              `json:"rowAsArray"`
 }
 
-// FieldDefinition describes a column in a query result.
+// FieldDefinition describes a column in a query result. ColumnID is signed, as
+// PostgreSQL sends it, so a system column such as ctid is -1.
 type FieldDefinition struct {
 	Name             string `json:"name"`
 	TableID          uint32 `json:"tableID"`
-	ColumnID         uint16 `json:"columnID"`
+	ColumnID         int16  `json:"columnID"`
 	DataTypeID       uint32 `json:"dataTypeID"`
 	DataTypeSize     int16  `json:"dataTypeSize"`
 	DataTypeModifier int32  `json:"dataTypeModifier"`

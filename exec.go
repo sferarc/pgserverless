@@ -268,7 +268,7 @@ func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget 
 		fields[i] = FieldDefinition{
 			Name:             d.Name,
 			TableID:          d.TableOID,
-			ColumnID:         uint16(d.TableAttributeNumber),
+			ColumnID:         int16(d.TableAttributeNumber),
 			DataTypeID:       d.DataTypeOID,
 			DataTypeSize:     d.DataTypeSize,
 			DataTypeModifier: d.TypeModifier,

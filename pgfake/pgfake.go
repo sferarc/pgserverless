@@ -89,6 +89,9 @@ type Result struct {
 type Col struct {
 	Name    string
 	TypeOID uint32
+	// TableOID and AttNum say which table column this is; zero is a computed column, and a system column's AttNum is negative.
+	TableOID uint32
+	AttNum   int16
 }
 
 // New starts a fake backend on a random localhost port and returns it.
@@ -652,8 +655,8 @@ func rowDescription(Cols []Col) *pgproto3.RowDescription {
 	for i, c := range Cols {
 		fields[i] = pgproto3.FieldDescription{
 			Name:                 []byte(c.Name),
-			TableOID:             0,
-			TableAttributeNumber: 0,
+			TableOID:             c.TableOID,
+			TableAttributeNumber: uint16(c.AttNum),
 			DataTypeOID:          c.TypeOID,
 			DataTypeSize:         -1,
 			TypeModifier:         -1,
