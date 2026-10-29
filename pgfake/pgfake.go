@@ -59,6 +59,11 @@ type PG struct {
 	// so a test can exercise the path a wrong credential takes, which is the
 	// only one a host's brute-force accounting is fed from.
 	rejectAuth *pgproto3.ErrorResponse
+
+	// cancels holds a channel per live session, closed by a CancelRequest carrying its process ID.
+	cancels        map[uint32]chan struct{}
+	nextPID        uint32
+	cancelRequests int
 }
 
 // Result is the canned response for one query.
@@ -74,6 +79,8 @@ type Result struct {
 	IsWrite bool
 	// ParamOIDs are the parameter types Describe reports; unset ones are 0 (unknown), so pgx binds text.
 	ParamOIDs []uint32
+	// WaitForCancel holds the statement until a CancelRequest for its session arrives, then fails it with 57014 as PostgreSQL does.
+	WaitForCancel bool
 }
 
 // Col describes one result column.
@@ -96,6 +103,7 @@ func New(t testing.TB) *PG {
 		tlsCfg:  selfSignedTLS(t),
 		typeMap: pgtype.NewMap(),
 		respond: make(map[string]Result),
+		cancels: make(map[uint32]chan struct{}),
 	}
 	go f.serve()
 	t.Cleanup(func() { _ = ln.Close() })
@@ -147,6 +155,38 @@ func (f *PG) LastBegin() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastBegin
+}
+
+// CancelRequests returns how many CancelRequests named a live session.
+func (f *PG) CancelRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cancelRequests
+}
+
+func (f *PG) register() (uint32, chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextPID++
+	ch := make(chan struct{})
+	f.cancels[f.nextPID] = ch
+	return f.nextPID, ch
+}
+
+func (f *PG) unregister(pid uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.cancels, pid)
+}
+
+func (f *PG) cancel(pid uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ch, ok := f.cancels[pid]; ok {
+		f.cancelRequests++
+		close(ch)
+		delete(f.cancels, pid)
+	}
 }
 
 // StartupParam returns a parameter from the most recent StartupMessage.
@@ -221,6 +261,8 @@ type session struct {
 	readOnly bool     // the open transaction is READ ONLY
 	aborted  bool     // an error occurred; skip messages until the next Sync
 	pending  []string // IsWrite statements run since the transaction began
+
+	cancelled chan struct{} // closed by a CancelRequest for this session
 }
 
 // isControlSQL reports whether sql is a transaction-control statement the fake
@@ -264,6 +306,10 @@ func (f *PG) handle(conn net.Conn) {
 	if err != nil {
 		return
 	}
+	if cr, ok := startup.(*pgproto3.CancelRequest); ok {
+		f.cancel(cr.ProcessID)
+		return
+	}
 	sm, ok := startup.(*pgproto3.StartupMessage)
 	if !ok {
 		return
@@ -289,13 +335,15 @@ func (f *PG) handle(conn net.Conn) {
 	// protocol queries with arguments. A real PostgreSQL server always reports
 	// this.
 	be.Send(&pgproto3.ParameterStatus{Name: "standard_conforming_strings", Value: "on"})
-	be.Send(&pgproto3.BackendKeyData{ProcessID: 1, SecretKey: []byte{0, 0, 0, 1}})
+	pid, cancelled := f.register()
+	defer f.unregister(pid)
+	be.Send(&pgproto3.BackendKeyData{ProcessID: pid, SecretKey: []byte{0, 0, 0, 1}})
 	be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
 	if err := be.Flush(); err != nil {
 		return
 	}
 
-	s := &session{statements: map[string]string{}}
+	s := &session{statements: map[string]string{}, cancelled: cancelled}
 
 	for {
 		msg, err := be.Receive()
@@ -491,6 +539,16 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 	if res.PgError != nil {
 		s.aborted = true
 		be.Send(res.PgError)
+		return
+	}
+	if res.WaitForCancel {
+		_ = be.Flush()
+		select {
+		case <-s.cancelled:
+		case <-time.After(10 * time.Second):
+		}
+		s.aborted = true
+		be.Send(&pgproto3.ErrorResponse{Severity: "ERROR", Code: "57014", Message: "canceling statement due to user request"})
 		return
 	}
 	if res.IsWrite {

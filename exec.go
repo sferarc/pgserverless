@@ -34,7 +34,7 @@ func queryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, query string, params []any, arrayMode, rawText bool, budget *responseBudget) {
 	result, err := queryRows(ctx, conn, query, params, arrayMode, rawText, budget)
 	if err != nil {
-		writePgError(w, err)
+		writeQueryError(ctx, w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -64,13 +64,13 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 	for i := range queries {
 		rows, err := br.Query()
 		if err != nil {
-			writePgError(w, err)
+			writeQueryError(ctx, w, err)
 			return
 		}
 		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
 		rows.Close()
 		if err != nil {
-			writePgError(w, err)
+			writeQueryError(ctx, w, err)
 			return
 		}
 		results = append(results, *result)
@@ -94,7 +94,7 @@ func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Conte
 	joined := make([]QueryItem, len(queries))
 	for i, q := range queries {
 		if err := checkBatchItem(count, q.Query); err != nil {
-			writePgError(w, err)
+			writeQueryError(ctx, w, err)
 			return
 		}
 		if i > 0 || txn {
@@ -134,7 +134,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 
 	// Drain the BEGIN result.
 	if _, err := br.Exec(); err != nil {
-		writePgError(w, err)
+		writeQueryError(ctx, w, err)
 		return
 	}
 
@@ -142,7 +142,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 	for i := range queries {
 		rows, err := br.Query()
 		if err != nil {
-			writePgError(w, err)
+			writeQueryError(ctx, w, err)
 			return
 		}
 		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
@@ -152,7 +152,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 		}
 		rows.Close()
 		if err != nil {
-			writePgError(w, err)
+			writeQueryError(ctx, w, err)
 			return
 		}
 		results = append(results, *result)
@@ -160,15 +160,15 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 
 	if deferCommit {
 		if err := br.Close(); err != nil {
-			writePgError(w, err)
+			writeQueryError(ctx, w, err)
 			return
 		}
 		if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
-			writePgError(w, err)
+			writeQueryError(ctx, w, err)
 			return
 		}
 	} else if _, err := br.Exec(); err != nil { // Drain the COMMIT result.
-		writePgError(w, err)
+		writeQueryError(ctx, w, err)
 		return
 	}
 

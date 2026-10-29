@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/labstack/echo/v4"
 )
 
@@ -33,6 +35,9 @@ const MaxRequestBodyBytes = 10 << 20
 
 // MaxResponseBytes is Neon's default response cap, for WithMaxResponseBytes.
 const MaxResponseBytes = 10 << 20
+
+// cancelGrace bounds how long a cancelled statement, and dialing its CancelRequest, may take before the socket is cut.
+const cancelGrace = time.Second
 
 // Upstream says where a request's query should run and as whom. An Admission
 // returns one once it has decided the request may proceed.
@@ -225,6 +230,10 @@ func dial(ctx context.Context, up Upstream, mode pgx.QueryExecMode) (*pgx.Conn, 
 	}
 	if mode != 0 {
 		cfg.DefaultQueryExecMode = mode
+	}
+	// pgx's default only cuts the socket, which leaves the statement running on the database after the request has ended.
+	cfg.BuildContextWatcherHandler = func(c *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: c, DeadlineDelay: cancelGrace}
 	}
 	return pgx.ConnectConfig(ctx, cfg)
 }

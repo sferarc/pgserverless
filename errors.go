@@ -1,6 +1,7 @@
 package pgserverless
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,7 +22,12 @@ var (
 	ErrInvalidConnectionString = errors.New("invalid connection string")
 	ErrResponseTooLarge        = errors.New("response is too large")
 	ErrRequestTooLarge         = errors.New("request is too large")
+	// ErrQueryCancelled marks a statement stopped because its request ended, by the query timeout or the client going away.
+	ErrQueryCancelled = errors.New("query was cancelled")
 )
+
+// queryCancelledMessage is what Neon's proxy answers for a cancelled statement, with code 08P01 and status 400.
+const queryCancelledMessage = "Query cancelled, connection was terminated"
 
 var keywordPassword = regexp.MustCompile(`(?i)(^|[\s,;:(\[{\x60'"])(ssl)?password\s*=`)
 
@@ -31,6 +37,10 @@ var paramCountMismatch = regexp.MustCompile(`^(expected \d+ arguments, got \d+|u
 // the driver expects. It is pure, so a caller not using echo can still produce
 // the same response the handler would.
 func PgErrorResponse(err error) (int, ErrorResponse) {
+	if errors.Is(err, ErrQueryCancelled) {
+		code := "08P01"
+		return http.StatusBadRequest, ErrorResponse{Message: queryCancelledMessage, Code: &code}
+	}
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		resp := ErrorResponse{
 			Message:  pgErr.Message,
@@ -104,6 +114,14 @@ func HandlePgError(c echo.Context, err error) error {
 func writePgError(w http.ResponseWriter, err error) {
 	status, resp := PgErrorResponse(err)
 	writeJSON(w, status, resp)
+}
+
+// writeQueryError is writePgError for a statement run under ctx, which answers as Neon does once ctx has ended.
+func writeQueryError(ctx context.Context, w http.ResponseWriter, err error) {
+	if ctx.Err() != nil {
+		err = fmt.Errorf("%w: %w", ErrQueryCancelled, err)
+	}
+	writePgError(w, err)
 }
 
 // classifyPgErrorStatus maps a SQLSTATE code prefix to an HTTP status.
