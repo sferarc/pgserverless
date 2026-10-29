@@ -121,7 +121,12 @@ func writeQueryError(ctx context.Context, w http.ResponseWriter, err error) {
 	if ctx.Err() != nil {
 		err = fmt.Errorf("%w: %w", ErrQueryCancelled, err)
 	}
-	writePgError(w, err)
+	status, resp := PgErrorResponse(err)
+	// Neon answers any error PostgreSQL raises for a statement with 400, the only status the driver reads the SQLSTATE from.
+	if _, ok := errors.AsType[*pgconn.PgError](err); ok {
+		status = http.StatusBadRequest
+	}
+	writeJSON(w, status, resp)
 }
 
 // classifyPgErrorStatus maps a SQLSTATE code prefix to an HTTP status.
