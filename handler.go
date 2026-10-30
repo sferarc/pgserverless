@@ -220,7 +220,8 @@ func upstreamConfig(up Upstream, mode pgx.QueryExecMode) (*pgx.ConnConfig, error
 	}
 	// ParseConfig("") also applies this process's own libpq environment (PGHOST, PGTZ, PGOPTIONS, ...); none of it is the client's.
 	cfg.Fallbacks = nil
-	cfg.RuntimeParams = map[string]string{}
+	// The JSON both ways is UTF-8; unset, the session takes the database's or role's encoding and non-ASCII text arrives garbled.
+	cfg.RuntimeParams = map[string]string{"client_encoding": "UTF8"}
 	cfg.ValidateConnect = nil
 	cfg.ConnectTimeout = 0
 	cfg.SSLNegotiation = ""

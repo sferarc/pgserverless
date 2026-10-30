@@ -64,6 +64,9 @@ type PG struct {
 	cancels        map[uint32]chan struct{}
 	nextPID        uint32
 	cancelRequests int
+
+	// dbEncoding is the database's encoding and so a session's client_encoding when its startup names none; empty is UTF8.
+	dbEncoding string
 }
 
 // Result is the canned response for one query.
@@ -129,6 +132,14 @@ func NewRejectingAuth(t testing.TB, code, message string) *PG {
 	f.rejectAuth = &pgproto3.ErrorResponse{Severity: "FATAL", Code: code, Message: message}
 	f.mu.Unlock()
 	return f
+}
+
+// SetDatabaseEncoding makes enc the client_encoding of a session whose startup names none, as PostgreSQL defaults it to the database's encoding.
+// Only LATIN1 converts row text; anything else is sent as UTF-8.
+func (f *PG) SetDatabaseEncoding(enc string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dbEncoding = enc
 }
 
 // addr returns the host:port the fake backend listens on.
@@ -270,6 +281,8 @@ type session struct {
 	ran map[string]bool // statements this session has run without error
 
 	cancelled chan struct{} // closed by a CancelRequest for this session
+
+	latin1 bool // the session's client_encoding is LATIN1, so row text is converted to it
 }
 
 // isControlSQL reports whether sql is a transaction-control statement the fake
@@ -323,7 +336,14 @@ func (f *PG) handle(conn net.Conn) {
 	}
 	f.mu.Lock()
 	f.lastStartup = sm.Parameters
+	clientEncoding := sm.Parameters["client_encoding"]
+	if clientEncoding == "" {
+		clientEncoding = f.dbEncoding
+	}
 	f.mu.Unlock()
+	if clientEncoding == "" {
+		clientEncoding = "UTF8"
+	}
 
 	f.mu.Lock()
 	reject := f.rejectAuth
@@ -337,7 +357,7 @@ func (f *PG) handle(conn net.Conn) {
 	// Auth: trust everyone.
 	be.Send(&pgproto3.AuthenticationOk{})
 	be.Send(&pgproto3.ParameterStatus{Name: "server_version", Value: "16.0 (pgfake)"})
-	be.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
+	be.Send(&pgproto3.ParameterStatus{Name: "client_encoding", Value: clientEncoding})
 	// pgx requires standard_conforming_strings=on before it will run simple-
 	// protocol queries with arguments. A real PostgreSQL server always reports
 	// this.
@@ -350,7 +370,7 @@ func (f *PG) handle(conn net.Conn) {
 		return
 	}
 
-	s := &session{statements: map[string]string{}, cancelled: cancelled, ran: map[string]bool{}}
+	s := &session{statements: map[string]string{}, cancelled: cancelled, ran: map[string]bool{}, latin1: strings.EqualFold(clientEncoding, "LATIN1")}
 
 	for {
 		msg, err := be.Receive()
@@ -576,7 +596,15 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 		be.Send(rowDescription(res.Cols))
 	}
 	for _, row := range res.Rows {
-		be.Send(f.encodeRow(res.Cols, row, resultFormats))
+		dr := f.encodeRow(res.Cols, row, resultFormats)
+		if s.latin1 {
+			for i, v := range dr.Values {
+				if convertsEncoding(res.Cols[i].TypeOID, formatForCol(resultFormats, i)) {
+					dr.Values[i] = toLatin1(v)
+				}
+			}
+		}
+		be.Send(dr)
 	}
 	Tag := res.Tag
 	if Tag == "" {
@@ -644,6 +672,27 @@ func (f *PG) encodeRow(Cols []Col, row []any, resultFormats []int16) *pgproto3.D
 		values[i] = encoded
 	}
 	return &pgproto3.DataRow{Values: values}
+}
+
+// convertsEncoding reports whether PostgreSQL converts a column to the client encoding: every text-format value, and the string types in binary too.
+func convertsEncoding(oid uint32, format int16) bool {
+	switch oid {
+	case pgtype.TextOID, pgtype.VarcharOID, pgtype.BPCharOID, pgtype.NameOID:
+		return true
+	}
+	return format == 0
+}
+
+// toLatin1 converts UTF-8 text to LATIN1 as PostgreSQL's output conversion does; the fixtures hold no character LATIN1 lacks.
+func toLatin1(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	out := make([]byte, 0, len(b))
+	for _, r := range string(b) {
+		out = append(out, byte(r))
+	}
+	return out
 }
 
 // rowDescription builds a RowDescription whose format codes match how values
