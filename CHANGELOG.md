@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- c9e482c: The reference server (`cmd/pgserverless`) now honors `sslmode=disable` in `DATABASE_URL` when the password holds a `%` that starts no escape (`50%off`). `ParseConnectionString` accepts such a password since it reads userinfo like Neon, but the sslmode lookup still went through `net/url`, which refuses it, so the server required TLS and every request against a database without TLS failed.
+
 ## 0.3.0
 
 ### Minor Changes
