@@ -88,6 +88,8 @@ type Result struct {
 	HoldAfterRows bool
 	// Requires is a statement creating an object this one uses; until the session has run it, Parse and Execute fail with 42P01.
 	Requires string
+	// NeedsTxnBlock fails the statement with 25P01 outside a BEGIN, as LOCK TABLE, SAVEPOINT and DECLARE CURSOR do in a pipeline.
+	NeedsTxnBlock bool
 }
 
 // Col describes one result column.
@@ -586,6 +588,11 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 	if res.Requires != "" && !s.ran[res.Requires] {
 		s.aborted = true
 		be.Send(missingRelation(res.Requires))
+		return
+	}
+	if res.NeedsTxnBlock && !s.inTxn {
+		s.aborted = true
+		be.Send(&pgproto3.ErrorResponse{Severity: "ERROR", Code: "25P01", Message: writeVerb(sql) + " can only be used in transaction blocks"})
 		return
 	}
 	if res.WaitForCancel {

@@ -1042,9 +1042,9 @@ func TestConformance_BatchReadOnly_UnreadableValue(t *testing.T) {
 	assert.Contains(t, errResp.Message, "Batch-Read-Only")
 }
 
-// A raw-text batch with no transaction options takes the plain
-// implicit-transaction pipeline (no explicit BEGIN), the driver's fast path.
-func TestConformance_BatchNoOptions_NoExplicitBegin(t *testing.T) {
+// A raw-text batch with no transaction options opens a plain BEGIN, as Neon's
+// does, rather than running as an implicit-transaction pipeline.
+func TestConformance_BatchNoOptions_PlainBegin(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT 1 AS one", pgfake.Result{
 		Cols: []pgfake.Col{{Name: "one", TypeOID: oidInt4}},
@@ -1055,7 +1055,8 @@ func TestConformance_BatchNoOptions_NoExplicitBegin(t *testing.T) {
 
 	rec := doSQL(e, `{"queries":[{"query":"SELECT 1 AS one"}]}`, map[string]string{"Neon-Raw-Text-Output": "true"})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	assert.Empty(t, pg.LastBegin(), "no transaction options => no explicit BEGIN")
+	assert.Equal(t, "BEGIN", pg.LastBegin())
+	assert.Empty(t, rec.Header().Get("Neon-Batch-Isolation-Level"))
 }
 
 // A committed batch echoes the characteristics it ran with, as Neon's proxy does;

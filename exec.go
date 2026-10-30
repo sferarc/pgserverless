@@ -44,23 +44,18 @@ func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, q
 	writeJSON(w, http.StatusOK, result)
 }
 
-// executeBatch executes multiple queries in a transaction and returns all
-// results. A native-mode batch runs one statement at a time (executeBatchInOrder).
-// A raw-text batch with explicit transaction characteristics (read-only /
-// isolation level / deferrable) is wrapped in an explicit BEGIN … COMMIT so
-// PostgreSQL applies and enforces them; otherwise it runs as a single
-// implicit-transaction pipeline (pgx.SendBatch). A capped batch always takes
-// the explicit path, as Neon's does, so a 507 can roll it back.
+// executeBatch runs a batch inside BEGIN and COMMIT, as Neon does; PostgreSQL
+// refuses LOCK TABLE and SAVEPOINT in an implicit-transaction pipeline.
 func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
 	if !rawText {
 		executeBatchInOrder(w, conn, ctx, queries, arrayMode, opts, budget)
 		return
 	}
-	if !opts.isDefault() || budget.capped() {
-		executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts, budget)
-		return
-	}
+	executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts, budget)
+}
 
+// executeBatchPipeline runs a governed simple-protocol batch as one joined query, which PostgreSQL runs as an implicit transaction block.
+func executeBatchPipeline(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, budget *responseBudget) {
 	batch := &pgx.Batch{}
 	for _, q := range queries {
 		if !emptyItem(q) {
@@ -94,12 +89,12 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 
-// executeBatchSimple runs a simple-protocol batch the way executeBatch does,
-// as one simple query that pgx joins with ';', so a policy proxy still sees and
-// brackets the whole batch itself. Each item must be at most one complete
-// statement, an item with none is answered without being sent, and a newline on
-// both sides of every ';' keeps a trailing -- comment from swallowing the next
-// item.
+// executeBatchSimple runs a simple-protocol batch as one simple query that pgx
+// joins with ';', so a policy proxy still sees and brackets the whole batch
+// itself; only transaction characteristics or a response cap add BEGIN. Each
+// item must be at most one complete statement, an item with none is answered
+// without being sent, and a newline on both sides of every ';' keeps a trailing
+// -- comment from swallowing the next item.
 func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
 	// executeBatchTxn queues BEGIN before the items and may queue COMMIT after them.
 	txn := !opts.isDefault() || budget.capped()
@@ -122,7 +117,11 @@ func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Conte
 		}
 		joined[i] = q
 	}
-	executeBatch(w, conn, ctx, joined, arrayMode, rawText, opts, budget)
+	if txn {
+		executeBatchTxn(w, conn, ctx, joined, arrayMode, rawText, opts, budget)
+		return
+	}
+	executeBatchPipeline(w, conn, ctx, joined, arrayMode, rawText, budget)
 }
 
 // executeBatchTxn runs the batch inside an explicit transaction with the
