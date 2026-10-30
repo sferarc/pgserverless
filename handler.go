@@ -328,7 +328,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 			onDialError(err)
 		}
 		slog.Warn("pgserverless: connect failed", "err", SanitizeError(err.Error()))
-		writePgError(w, err)
+		writeDialError(w, err)
 		return
 	}
 	defer conn.Close(context.Background())

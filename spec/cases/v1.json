@@ -1,0 +1,2763 @@
+{
+  "spec_version": "0.1.0",
+  "version": 1,
+  "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
+  "fixtures": [
+    {
+      "name": "session_settings",
+      "description": "Pins the database level settings that change how values are rendered, for sessions opened after the fixture runs.",
+      "sql": "DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET lc_monetary = ''C''', current_database()); EXECUTE format('ALTER DATABASE %I SET datestyle = ''ISO, MDY''', current_database()); EXECUTE format('ALTER DATABASE %I SET intervalstyle = ''postgres''', current_database()); END $$;"
+    },
+    {
+      "name": "scalars",
+      "description": "One row of the scalar types whose JSON encoding the spec constrains.",
+      "sql": "CREATE TABLE IF NOT EXISTS cf_scalars (id int4 PRIMARY KEY, big int8, price numeric, ratio float8, seen timestamptz, addr inet, host_addr inet, net cidr, ident uuid);\nTRUNCATE cf_scalars;\nINSERT INTO cf_scalars VALUES (1, 9223372036854775807, 1234.5678, 'NaN'::float8, 'infinity'::timestamptz, '10.0.0.0/8'::inet, '192.168.1.1'::inet, '10.0.0.0/8'::cidr, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid);"
+    },
+    {
+      "name": "shapes",
+      "description": "Values whose shape, rather than whose scalar encoding, the spec constrains.",
+      "sql": "CREATE TABLE IF NOT EXISTS cf_shapes (id int4 PRIMARY KEY, grid int4[], span int4range, spans int4multirange, empty_span int4range, unbounded_span int4range);\nTRUNCATE cf_shapes;\nINSERT INTO cf_shapes VALUES (1, ARRAY[ARRAY[1,2],ARRAY[3,4]], '[1,3)'::int4range, '{[1,3),[5,7)}'::int4multirange, 'empty'::int4range, '(,)'::int4range);"
+    },
+    {
+      "name": "constrained",
+      "description": "A table with a named constraint, so an integrity violation carries the fields the client reads.",
+      "sql": "CREATE TABLE IF NOT EXISTS cf_constrained (id int4 PRIMARY KEY, email text NOT NULL, CONSTRAINT cf_email_unique UNIQUE (email));\nTRUNCATE cf_constrained;\nINSERT INTO cf_constrained VALUES (1, 'a@example.com');"
+    },
+    {
+      "name": "ranges",
+      "description": "A range type over text, which PostgreSQL does not ship.",
+      "sql": "DO $$ BEGIN CREATE TYPE cf_textrange AS RANGE (subtype = text); EXCEPTION WHEN duplicate_object THEN NULL; END $$;"
+    }
+  ],
+  "cases": [
+    {
+      "id": "core/single-object-mode",
+      "level": 1,
+      "spec": "5.1",
+      "fixture": "scalars",
+      "note": "Object mode is not what the client asks for, but it is the mode most hand-written consumers use, and rows must be keyed by column name.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT id FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "SELECT",
+        "row_count": 1,
+        "row_as_array": false,
+        "fields": [
+          {
+            "name": "id",
+            "data_type_id": 23
+          }
+        ],
+        "rows": [
+          {
+            "id": {
+              "json": "1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "core/single-array-mode",
+      "level": 1,
+      "spec": "5.1",
+      "fixture": "scalars",
+      "note": "What the client always requests. rowAsArray must echo true.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT id FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "row_as_array": true,
+        "rows": [
+          [
+            {
+              "json": "1"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "core/empty-result-is-array-not-null",
+      "level": 1,
+      "spec": "5.1",
+      "fixture": "scalars",
+      "note": "rows must never be null. A client iterating the result should get an empty list, not a crash.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT id FROM cf_scalars WHERE id = -1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "SELECT",
+        "row_count": 0,
+        "rows": []
+      }
+    },
+    {
+      "id": "core/raw-text-mode-returns-strings",
+      "level": 1,
+      "spec": "5.3",
+      "fixture": "scalars",
+      "note": "The contrast case for the two response modes. int4 is a JSON number in native mode and a JSON string in raw text mode. This is the mode the client always selects, so a server implementing only native mode fails against the real client while passing most type tests.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT id FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "fields": [
+          {
+            "name": "id",
+            "data_type_id": 23
+          }
+        ],
+        "rows": [
+          {
+            "id": {
+              "json": "\"1\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "core/unprefixed-header-wins",
+      "level": 1,
+      "spec": "4.1",
+      "fixture": "scalars",
+      "note": "Both spellings sent with conflicting values. The unprefixed one must win, so array mode is off here despite the prefixed header asking for it.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false,
+          "spelling": "both"
+        },
+        "body": {
+          "query": "SELECT id FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "row_as_array": false,
+        "rows": [
+          {
+            "id": {
+              "json": "1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "core/missing-query-is-rejected",
+      "level": 1,
+      "spec": "4.2",
+      "note": "No fixture needed. A body with no query is a client error and must carry the error shape, not an empty 200.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {}
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "message_contains": "query"
+        }
+      }
+    },
+    {
+      "id": "core/empty-query-is-an-empty-result",
+      "level": 1,
+      "spec": "4.2",
+      "note": "No fixture needed. An empty query is a query with no statement, not a missing one: PostgreSQL answers EmptyQueryResponse and Neon renders it as a 200 with empty fields and rows, an empty command and a null rowCount.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "query": ""
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "",
+        "rows": []
+      }
+    },
+    {
+      "id": "native/int8-as-string",
+      "level": 2,
+      "spec": "6.1",
+      "fixture": "scalars",
+      "note": "The headline rule. A JSON number is a double in JavaScript, so this value would silently become 9223372036854775808.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT big FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "big": {
+              "json": "\"9223372036854775807\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/nan-float-does-not-fail-the-response",
+      "level": 2,
+      "spec": "6.2",
+      "fixture": "scalars",
+      "note": "JSON has no encoding for NaN. A server that does not handle this does not return a wrong value, it fails the whole response and takes every other row with it. The id column is selected alongside so the failure mode is visible: a broken server returns no rows at all rather than one bad column.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT id, ratio FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "id": {
+              "json": "1"
+            },
+            "ratio": {
+              "json": "\"NaN\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/infinite-timestamp-is-a-word",
+      "level": 2,
+      "spec": "6.3",
+      "fixture": "scalars",
+      "note": "The worst naive failure in the spec. A decoder representing infinity as an enum emits 1, a number indistinguishable from a value the column could hold.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT seen FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "seen": {
+              "json": "\"infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/inet-drops-netmask-only-for-a-host",
+      "level": 2,
+      "spec": "6.5",
+      "fixture": "scalars",
+      "note": "Three columns in one case because the rule is a boundary, not a transformation: the host address loses its /32, the network inet keeps its /8, and cidr always keeps it. A server implementing the rule as unconditional fails on the second and third.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT host_addr, addr, net FROM cf_scalars WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "host_addr": {
+              "json": "\"192.168.1.1\""
+            },
+            "addr": {
+              "json": "\"10.0.0.0/8\""
+            },
+            "net": {
+              "json": "\"10.0.0.0/8\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/multidimensional-array-keeps-shape",
+      "level": 2,
+      "spec": "6.7",
+      "fixture": "shapes",
+      "note": "A flattening decoder returns [1,2,3,4] and nothing in the response says a dimension was lost, so a client reading row.grid[1] gets 2 where the column holds [3,4].",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT grid FROM cf_shapes WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "grid": {
+              "json": "[[1,2],[3,4]]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/empty-range-is-not-an-unbounded-range",
+      "level": 2,
+      "spec": "6.6",
+      "fixture": "shapes",
+      "note": "Three range columns in one case because the distinction is the rule. An empty range contains nothing and an unbounded range contains everything, and a naive renderer that treats an absent bound as an empty string collapses them.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT span, spans, empty_span, unbounded_span FROM cf_shapes WHERE id = 1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "span": {
+              "json": "\"[1,3)\""
+            },
+            "spans": {
+              "json": "\"{[1,3),[5,7)}\""
+            },
+            "empty_span": {
+              "json": "\"empty\""
+            },
+            "unbounded_span": {
+              "json": "\"(,)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "errors/constraint-violation-carries-client-field-names",
+      "level": 1,
+      "spec": "7.1",
+      "fixture": "constrained",
+      "note": "This case exists to catch the defect in SPEC.md Appendix A.1: a server emitting schemaName, tableName, columnName, dataTypeName or constraintName sends fields the client silently drops. has_fields uses the client's spellings, so a server using the longer ones fails here. status_class keeps this case about field names; the errors/*-is-400 cases check the SQLSTATE to status rule of SPEC.md 7.2.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "query": "INSERT INTO cf_constrained (id, email) VALUES (2, 'a@example.com')"
+        }
+      },
+      "expect": {
+        "status_class": "error",
+        "error": {
+          "code": "23505",
+          "severity": "ERROR",
+          "has_fields": ["code", "severity", "constraint", "table"]
+        }
+      }
+    },
+    {
+      "id": "errors/syntax-error-is-400",
+      "level": 1,
+      "spec": "7.2",
+      "note": "A PostgreSQL error raised by a statement is a 400 with the structured body, because the client parses the body on 400 only.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": false },
+        "body": { "query": "SELEC 1" }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "code": "42601", "severity": "ERROR" }
+      }
+    },
+    {
+      "id": "errors/connection-class-sqlstate-is-400",
+      "level": 1,
+      "spec": "7.2",
+      "note": "Class 08 raised by a statement is still a 400. Mapping it to 504 would hand the client a text body with no code.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": false },
+        "body": {
+          "query": "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '08006', MESSAGE = 'raised by the corpus'; END $$"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "code": "08006", "severity": "ERROR" }
+      }
+    },
+    {
+      "id": "errors/protocol-violation-sqlstate-is-400",
+      "level": 1,
+      "spec": "7.2",
+      "note": "08P01 is the code a server also uses for a cancelled or timed out request (SPEC.md 7.3), so its status has to be the one the client parses.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": false },
+        "body": {
+          "query": "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '08P01', MESSAGE = 'raised by the corpus'; END $$"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "code": "08P01", "severity": "ERROR" }
+      }
+    },
+    {
+      "id": "errors/resource-class-sqlstate-is-400",
+      "level": 1,
+      "spec": "7.2",
+      "note": "Class 53 raised by a statement is a 400, not a 503: the client would otherwise lose the SQLSTATE.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": false },
+        "body": {
+          "query": "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '53300', MESSAGE = 'raised by the corpus'; END $$"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "code": "53300", "severity": "ERROR" }
+      }
+    },
+    {
+      "id": "batch/read-only-rejects-a-write",
+      "level": 3,
+      "spec": "8",
+      "fixture": "constrained",
+      "note": "The characteristics must be applied by PostgreSQL rather than emulated, which is what makes the write fail with 25006 rather than with a server-invented message. A server that accepts the header and ignores it passes a shape check and fails this.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false,
+          "batch_read_only": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT id FROM cf_constrained WHERE id = 1"
+            },
+            {
+              "query": "INSERT INTO cf_constrained (id, email) VALUES (3, 'c@example.com')"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status_class": "error",
+        "error": {
+          "code": "25006"
+        }
+      }
+    },
+    {
+      "id": "batch/unparseable-read-only-is-refused",
+      "level": 3,
+      "spec": "8",
+      "fixture": "constrained",
+      "note": "Defaulting an unparseable boolean to false is the one wrong answer available, because false means read-write: the caller asked for a guarantee and would silently not get it.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false,
+          "batch_read_only": "yes-please"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT id FROM cf_constrained WHERE id = 1"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "message_contains": "Read-Only"
+        }
+      }
+    },
+    {
+      "id": "websocket/handshake-negotiates-pg-subprotocol",
+      "level": 4,
+      "spec": "9",
+      "requires": "websocket",
+      "note": "Level 4 covers the upgrade only. Once the connection carries PostgreSQL frames, testing them is testing PostgreSQL.",
+      "request": {
+        "path": "/v2",
+        "method": "GET"
+      },
+      "expect": {
+        "status": 101,
+        "websocket": {
+          "upgraded": true,
+          "subprotocol": "pg"
+        }
+      }
+    },
+    {
+      "id": "native/int8-minimum-as-string",
+      "level": 2,
+      "spec": "6.1",
+      "note": "The negative bound is as exposed as the positive one.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT (-9223372036854775808)::int8 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"-9223372036854775808\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/int8-above-2-53-as-string",
+      "level": 2,
+      "spec": "6.1",
+      "note": "2^53 + 1, the smallest int8 a double cannot hold.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 9007199254740993::int8 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"9007199254740993\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/numeric-as-string",
+      "level": 2,
+      "spec": "6.1",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 1234.5678::numeric AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"1234.5678\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/numeric-beyond-double-precision",
+      "level": 2,
+      "spec": "6.1",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 12345678901234567890.123456789::numeric AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"12345678901234567890.123456789\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/numeric-nan-as-string",
+      "level": 2,
+      "spec": "6.1",
+      "note": "numeric NaN is a string for the same reason as every numeric.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'NaN'::numeric AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"NaN\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/money-as-text",
+      "level": 2,
+      "spec": "6.1",
+      "note": "Relies on the session_settings fixture pinning lc_monetary, since money renders in the database locale.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '1234.50'::money AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"$1,234.50\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/int8-array-as-strings",
+      "level": 2,
+      "spec": "6.1",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[1,9223372036854775807]::int8[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"1\",\"9223372036854775807\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/numeric-array-as-strings",
+      "level": 2,
+      "spec": "6.1",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[1.5,2.25]::numeric[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"1.5\",\"2.25\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/int8-multidimensional-array-keeps-strings",
+      "level": 2,
+      "spec": "6.8",
+      "note": "Reshaping must happen after the element coercions, so the nested form still carries strings.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[ARRAY[1,2],ARRAY[3,4]]::int8[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[[\"1\",\"2\"],[\"3\",\"4\"]]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/money-array-as-strings",
+      "level": 2,
+      "spec": "6.1",
+      "note": "The first element contains a group separator, so splitting the array literal on commas is wrong.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['1234.50','2.00']::money[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"$1,234.50\",\"$2.00\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/money-multidimensional-array",
+      "level": 2,
+      "spec": "6.1",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[ARRAY['1234.50','2.00'],ARRAY['3.00','4000.00']]::money[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[[\"$1,234.50\",\"$2.00\"],[\"$3.00\",\"$4,000.00\"]]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/finite-float-stays-a-number",
+      "level": 2,
+      "spec": "6.2",
+      "note": "Only the non-finite values become strings.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 1.5::float8 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "1.5"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/float4-nan-as-string",
+      "level": 2,
+      "spec": "6.2",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'NaN'::float4 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"NaN\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/float8-infinity-as-string",
+      "level": 2,
+      "spec": "6.2",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'Infinity'::float8 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"Infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/float8-negative-infinity-as-string",
+      "level": 2,
+      "spec": "6.2",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '-Infinity'::float8 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"-Infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/float8-array-with-non-finite-elements",
+      "level": 2,
+      "spec": "6.2",
+      "note": "Element-wise: the finite element stays a number.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[1.5,'NaN','Infinity','-Infinity']::float8[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[1.5,\"NaN\",\"Infinity\",\"-Infinity\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/date-infinity-as-word",
+      "level": 2,
+      "spec": "6.3",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'infinity'::date AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/date-negative-infinity-as-word",
+      "level": 2,
+      "spec": "6.3",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '-infinity'::date AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"-infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamp-infinity-as-word",
+      "level": 2,
+      "spec": "6.3",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'infinity'::timestamp AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamptz-negative-infinity-as-word",
+      "level": 2,
+      "spec": "6.3",
+      "note": "A decoder that models infinity as an enum emits -1 here.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '-infinity'::timestamptz AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"-infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamptz-array-with-infinity",
+      "level": 2,
+      "spec": "6.3",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['infinity','-infinity']::timestamptz[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"infinity\",\"-infinity\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/uuid-as-dashed-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/bytea-as-hex-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "Not base64.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '\\x0102'::bytea AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"\\\\x0102\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/bytea-empty",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '\\x'::bytea AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"\\\\x\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/bytea-array-as-hex-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['\\x0102','\\xff']::bytea[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"\\\\x0102\",\"\\\\xff\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/xml-as-document-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '<a>1</a>'::xml AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"<a>1</a>\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/date-as-plain-date",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '2024-01-01'::date AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"2024-01-01\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/macaddr-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '08:00:2b:01:02:03'::macaddr AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"08:00:2b:01:02:03\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/macaddr8-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '08:00:2b:01:02:03:04:05'::macaddr8 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"08:00:2b:01:02:03:04:05\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/macaddr8-array-as-strings",
+      "level": 2,
+      "spec": "6.4",
+      "note": "pgx has no macaddr8[] codec and returns the literal as one string; it must still be an array.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['08:00:2b:01:02:03:04:05','08:00:2b:ff:fe:01:02:03']::macaddr8[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"08:00:2b:01:02:03:04:05\",\"08:00:2b:ff:fe:01:02:03\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/bit-string-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT B'101'::bit(3) AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"101\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/varbit-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT B'10101'::varbit AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"10101\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/bit-string-array-as-strings",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[B'101',B'010']::bit(3)[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"101\",\"010\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/point-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '(1,2)'::point AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"(1,2)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/lseg-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[(1,2),(3,4)]'::lseg AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[(1,2),(3,4)]\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/box-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '(3,4),(1,2)'::box AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"(3,4),(1,2)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/path-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[(1,2),(3,4)]'::path AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[(1,2),(3,4)]\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/polygon-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '((1,2),(3,4),(5,0))'::polygon AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"((1,2),(3,4),(5,0))\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/circle-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '<(1,2),3>'::circle AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"<(1,2),3>\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/line-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '{1,2,3}'::line AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{1,2,3}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/tsvector-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'a:1'::tsvector AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"'a':1\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/inet-ipv6-host-drops-netmask",
+      "level": 2,
+      "spec": "6.5",
+      "note": "The width comes from the address, so an IPv6 host is /128.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '::1'::inet AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"::1\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/inet-network-keeps-netmask",
+      "level": 2,
+      "spec": "6.5",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '192.168.1.0/24'::inet AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"192.168.1.0/24\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/cidr-host-keeps-netmask",
+      "level": 2,
+      "spec": "6.5",
+      "note": "cidr always prints its netmask.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '192.168.1.1/32'::cidr AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"192.168.1.1/32\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/int4range-as-literal",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[1,3)'::int4range AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[1,3)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/range-unbounded-both-ends",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '(,)'::int4range AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"(,)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/int8range-bound-above-2-53",
+      "level": 2,
+      "spec": "6.6",
+      "note": "A bound emitted as a JSON number would be corrupted.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT int8range(9007199254740993, 9007199254740995) AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[9007199254740993,9007199254740995)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/textrange-quotes-bounds-that-need-it",
+      "level": 2,
+      "spec": "6.6",
+      "note": "A range literal quotes a bound containing whitespace or a comma.",
+      "fixture": "ranges",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[\"a b\",\"c,d\"]'::cf_textrange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[\\\"a b\\\",\\\"c,d\\\"]\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/textrange-empty-bound-is-quoted",
+      "level": 2,
+      "spec": "6.6",
+      "note": "A lower bound that is the empty string is not an unbounded end.",
+      "fixture": "ranges",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '(\"\",b)'::cf_textrange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"(\\\"\\\",b)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/multirange-as-literal",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '{[1,3),[5,7)}'::int4multirange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{[1,3),[5,7)}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/multirange-empty",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '{}'::int4multirange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/range-array-as-strings",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['[1,3)','empty']::int4range[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"[1,3)\",\"empty\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/three-dimensional-array-keeps-shape",
+      "level": 2,
+      "spec": "6.7",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[ARRAY[ARRAY[1,2],ARRAY[3,4]],ARRAY[ARRAY[5,6],ARRAY[7,8]]] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[[[1,2],[3,4]],[[5,6],[7,8]]]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/text-multidimensional-array-keeps-shape",
+      "level": 2,
+      "spec": "6.7",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[ARRAY['a','b'],ARRAY['c','d']] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[[\"a\",\"b\"],[\"c\",\"d\"]]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamp-spelling-is-undecided",
+      "level": 2,
+      "spec": "Appendix B.2",
+      "note": "Undecided: PostgreSQL prints a space separated value, some servers emit RFC 3339. Both are accepted until the spec chooses. timestamptz is left out because it renders in the session TimeZone, which the corpus cannot pin.",
+      "compare": "parses_equal",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '2024-01-01 10:00:00'::timestamp AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"2024-01-01 10:00:00\"",
+              "also": ["\"2024-01-01T10:00:00Z\""]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/time-spelling-is-undecided",
+      "level": 2,
+      "spec": "Appendix B.6",
+      "note": "Some servers carry six fractional digits where PostgreSQL prints none. Both parse to the same value.",
+      "compare": "parses_equal",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '10:00:00'::time AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"10:00:00\"",
+              "also": ["\"10:00:00.000000\""]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/interval-spelling-is-undecided",
+      "level": 2,
+      "spec": "Appendix B.6",
+      "note": "Some servers always carry a time part. Both parse to the same value.",
+      "compare": "parses_equal",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '1 day'::interval AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"1 day\"",
+              "also": ["\"1 day 00:00:00\""]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/tsvector-quote-escaping-is-undecided",
+      "level": 2,
+      "spec": "Appendix B.6",
+      "note": "PostgreSQL doubles an embedded quote; some servers backslash escape it. Both parse to the same value.",
+      "compare": "parses_equal",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $$'it''s'$$::tsvector AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"'it''s'\"",
+              "also": ["\"'it\\\\'s'\""]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "core/duplicate-columns-in-array-mode",
+      "level": 1,
+      "spec": "5.3",
+      "note": "Object mode with duplicate column names is undecided (Appendix B.1), so this pins only array mode, where position keeps the columns apart.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 1 AS a, 2 AS a"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "row_as_array": true,
+        "rows": [
+          [
+            {
+              "json": "1"
+            },
+            {
+              "json": "2"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "params/whole-number-into-int4-array",
+      "level": 1,
+      "spec": "4.4",
+      "note": "A JSON number is a double, and a general-purpose formatter renders 1000000 as 1e+06, which int4[] rejects with 22P02.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::int4[] AS v",
+          "params": [[1000000, 2000000, 10000000]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{1000000,2000000,10000000}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/whole-number-into-int8-array",
+      "level": 1,
+      "spec": "4.4",
+      "note": "Same rule for int8[]; whole numbers outside the int4 range must stay plain digits.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::int8[] AS v",
+          "params": [[1000000, 100000000000, 1000000000000000.0]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{1000000,100000000000,1000000000000000}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/very-large-whole-number-into-numeric-array",
+      "level": 2,
+      "spec": "4.4",
+      "note": "1e21 is where several formatters switch to exponent form. numeric reads either spelling, so this only fails if the renderer widens or rounds the digits.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::numeric[] AS v",
+          "params": [[1e21]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"1000000000000000000000\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/nested-array-into-int4-array-literal",
+      "level": 1,
+      "spec": "4.4",
+      "note": "Pins the literal itself: a nested JSON array must become a nested array literal, not Go's [1 2] spelling.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::int4[]::text AS v",
+          "params": [
+            [
+              [1, 2],
+              [3, 4]
+            ]
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{{1,2},{3,4}}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/nested-array-round-trips-in-shape",
+      "level": 2,
+      "spec": "4.4",
+      "note": "The write path of 4.4 and the shape rule of 6.7 together: what was sent comes back with both dimensions.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::int4[] AS v",
+          "params": [
+            [
+              [1, 2],
+              [3, 4]
+            ]
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[[1,2],[3,4]]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/array-element-quoting-text",
+      "level": 1,
+      "spec": "4.4",
+      "note": "Each element contains something that changes how the bare text reads back: empty, comma, quote, backslash, braces, edge whitespace, tab.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::text[] AS v",
+          "params": [
+            [
+              "",
+              "a,b",
+              "say \"hi\"",
+              "back\\slash",
+              "{x}",
+              " padded ",
+              "tab\there"
+            ]
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{\\\"\\\",\\\"a,b\\\",\\\"say \\\\\\\"hi\\\\\\\"\\\",\\\"back\\\\\\\\slash\\\",\\\"{x}\\\",\\\" padded \\\",\\\"tab\\there\\\"}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/null-versus-the-string-null",
+      "level": 1,
+      "spec": "4.4",
+      "note": "PostgreSQL matches the NULL keyword case-insensitively, so the strings must be quoted and only the JSON null stays bare.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::text[] AS v",
+          "params": [[null, "NULL", "null", "Null"]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{NULL,\\\"NULL\\\",\\\"null\\\",\\\"Null\\\"}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/null-element-in-int-array",
+      "level": 1,
+      "spec": "4.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::int4[] AS v",
+          "params": [[1, null, 3]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{1,NULL,3}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/text-array-with-unicode",
+      "level": 2,
+      "spec": "4.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::text[] AS v",
+          "params": [["héllo", "日本語", "😀 ok"]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"héllo\",\"日本語\",\"😀 ok\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/object-into-jsonb",
+      "level": 2,
+      "spec": "4.4",
+      "note": "An object is serialised to JSON text before binding; jsonb orders keys by length then bytes, which this input already satisfies.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::jsonb AS v",
+          "params": [
+            {
+              "a": 1,
+              "b": [true, null],
+              "c": "x"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "{\"a\":1,\"b\":[true,null],\"c\":\"x\"}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/objects-into-jsonb-array",
+      "level": 2,
+      "spec": "4.4",
+      "note": "An object element is JSON text full of commas, quotes and braces, so it must be quoted as an array element.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::jsonb[] AS v",
+          "params": [
+            [
+              {
+                "a": "x,y"
+              },
+              {
+                "b": null
+              }
+            ]
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[{\"a\":\"x,y\"},{\"b\":null}]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/bool-scalar",
+      "level": 1,
+      "spec": "4.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::bool AS v",
+          "params": [true]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"t\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/string-scalar-stays-text",
+      "level": 1,
+      "spec": "4.4",
+      "note": "A numeric-looking string is not turned into a number.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::text AS v",
+          "params": ["12"]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"12\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/null-scalar",
+      "level": 1,
+      "spec": "4.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::text IS NULL AS v",
+          "params": [null]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"t\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/numeric-precision-string-kept",
+      "level": 2,
+      "spec": "4.4",
+      "note": "A numeric sent as a string must reach PostgreSQL untouched, not pass through a double.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::numeric AS v",
+          "params": ["12345678901234567890.123456789"]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"12345678901234567890.123456789\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/number-scalar-into-int4",
+      "level": 1,
+      "spec": "4.2",
+      "note": "The SPEC 4.2 example: a JSON number scalar binds as its decimal text.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::int4 AS v",
+          "params": [42]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"42\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/whole-number-scalar-into-int8",
+      "level": 1,
+      "spec": "4.2",
+      "note": "A large whole number scalar must not take exponent form.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::int8 AS v",
+          "params": [1000000000000000.0]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"1000000000000000\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/whole-number-into-int4-array-native",
+      "level": 2,
+      "spec": "4.4",
+      "note": "Native mode counterpart of params/whole-number-into-int4-array.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::int4[] AS v",
+          "params": [[1000000, 2000000, 10000000]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[1000000,2000000,10000000]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/whole-number-into-int8-array-native",
+      "level": 2,
+      "spec": "4.4",
+      "note": "Native mode counterpart of params/whole-number-into-int8-array.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::int8[] AS v",
+          "params": [[1000000, 100000000000, 1000000000000000.0]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"1000000\",\"100000000000\",\"1000000000000000\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/array-element-quoting-text-native",
+      "level": 2,
+      "spec": "4.4",
+      "note": "Native mode counterpart of params/array-element-quoting-text.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::text[] AS v",
+          "params": [
+            [
+              "",
+              "a,b",
+              "say \"hi\"",
+              "back\\slash",
+              "{x}",
+              " padded ",
+              "tab\there"
+            ]
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"\",\"a,b\",\"say \\\"hi\\\"\",\"back\\\\slash\",\"{x}\",\" padded \",\"tab\\there\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/null-versus-the-string-null-native",
+      "level": 2,
+      "spec": "4.4",
+      "note": "Native mode counterpart of params/null-versus-the-string-null.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::text[] AS v",
+          "params": [[null, "NULL", "null", "Null"]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[null,\"NULL\",\"null\",\"Null\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "params/null-element-in-int-array-native",
+      "level": 2,
+      "spec": "4.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::int4[] AS v",
+          "params": [[1, null, 3]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[1,null,3]"
+            }
+          }
+        ]
+      },
+      "note": "Native mode counterpart of params/null-element-in-int-array."
+    },
+    {
+      "id": "params/bool-scalar-native",
+      "level": 2,
+      "spec": "4.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::bool AS v",
+          "params": [true]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "true"
+            }
+          }
+        ]
+      },
+      "note": "Native mode counterpart of params/bool-scalar."
+    },
+    {
+      "id": "params/count-mismatch-returns-error-shape",
+      "level": 1,
+      "spec": "7.1",
+      "note": "08P01 is PostgreSQL's code for a bind count mismatch; a server that checks the count itself must report the same code in the 7.1 error object rather than a 200 or an empty body.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT $1::int4 AS a, $2::int4 AS b",
+          "params": [1]
+        }
+      },
+      "expect": {
+        "status_class": "error",
+        "error": {
+          "code": "08P01",
+          "severity": "ERROR",
+          "has_fields": ["code", "severity"]
+        }
+      }
+    }
+  ]
+}

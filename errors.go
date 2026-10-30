@@ -33,76 +33,14 @@ var keywordPassword = regexp.MustCompile(`(?i)(^|[\s,;:(\[{\x60'"])(ssl)?passwor
 
 var paramCountMismatch = regexp.MustCompile(`^(expected \d+ arguments, got \d+|unused argument: \d+)$`)
 
-// PgErrorResponse maps a PostgreSQL or connection error to the status and body
-// the driver expects. It is pure, so a caller not using echo can still produce
-// the same response the handler would.
+// PgErrorResponse maps a statement error to the driver's status and body; every PostgreSQL error is a 400, as Neon's proxy does, since the driver parses only 400.
 func PgErrorResponse(err error) (int, ErrorResponse) {
-	if errors.Is(err, ErrQueryCancelled) {
-		code := "08P01"
-		return http.StatusBadRequest, ErrorResponse{Message: queryCancelledMessage, Code: &code}
-	}
-	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
-		resp := ErrorResponse{
-			Message:  pgErr.Message,
-			Code:     &pgErr.Code,
-			Severity: &pgErr.Severity,
-		}
-		// Optional fields are populated only when PostgreSQL sent them, so the
-		// JSON omits them rather than carrying empty strings the driver would
-		// surface as blank values on NeonDbError.
-		for _, f := range []struct {
-			src string
-			dst **string
-		}{
-			{pgErr.Detail, &resp.Detail},
-			{pgErr.Hint, &resp.Hint},
-			{pgErr.Where, &resp.Where},
-			{pgErr.SchemaName, &resp.SchemaName},
-			{pgErr.TableName, &resp.TableName},
-			{pgErr.ColumnName, &resp.ColumnName},
-			{pgErr.DataTypeName, &resp.DataTypeName},
-			{pgErr.ConstraintName, &resp.ConstraintName},
-			{pgErr.InternalQuery, &resp.InternalQuery},
-			{pgErr.File, &resp.File},
-			{pgErr.Routine, &resp.Routine},
-		} {
-			if f.src != "" {
-				v := f.src
-				*f.dst = &v
-			}
-		}
-		// The three numeric fields the client reads. They are int32 on the
-		// PostgreSQL error and strings on the client's object, and zero means
-		// absent rather than a real position, so they are converted here
-		// rather than left unpopulated as they were.
-		for _, f := range []struct {
-			src int32
-			dst **string
-		}{
-			{pgErr.Position, &resp.Position},
-			{pgErr.InternalPosition, &resp.InternalPosition},
-			{pgErr.Line, &resp.Line},
-		} {
-			if f.src != 0 {
-				v := strconv.FormatInt(int64(f.src), 10)
-				*f.dst = &v
-			}
-		}
-		return classifyPgErrorStatus(pgErr.Code), resp
-	}
+	return errorResponse(err, false)
+}
 
-	// pgx rejects a parameter count that disagrees with the statement before
-	// PostgreSQL sees it, with a different message in each query mode. PostgreSQL's own answer is a protocol violation, and
-	// the driver only reads the code from a 400.
-	if paramCountMismatch.MatchString(err.Error()) {
-		code, severity := "08P01", "ERROR"
-		return http.StatusBadRequest, ErrorResponse{Message: err.Error(), Code: &code, Severity: &severity}
-	}
-
-	// Non-PG errors are classified by message pattern and sanitized, because
-	// the underlying text can carry a connection string.
-	status, msg := classifyError(err)
-	return status, ErrorResponse{Message: SanitizeError(msg)}
+// DialErrorResponse is PgErrorResponse for a failed upstream connect, where only an error the request caused is a 400.
+func DialErrorResponse(err error) (int, ErrorResponse) {
+	return errorResponse(err, true)
 }
 
 // HandlePgError writes the response PgErrorResponse produces.
@@ -116,60 +54,135 @@ func writePgError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, resp)
 }
 
+// HandleDialError writes the response DialErrorResponse produces.
+func HandleDialError(c echo.Context, err error) error {
+	writeDialError(c.Response(), err)
+	return nil
+}
+
 // writeQueryError is writePgError for a statement run under ctx, which answers as Neon does once ctx has ended.
 func writeQueryError(ctx context.Context, w http.ResponseWriter, err error) {
 	if ctx.Err() != nil {
 		err = fmt.Errorf("%w: %w", ErrQueryCancelled, err)
 	}
-	status, resp := PgErrorResponse(err)
-	// Neon answers any error PostgreSQL raises for a statement with 400, the only status the driver reads the SQLSTATE from.
-	if _, ok := errors.AsType[*pgconn.PgError](err); ok {
-		status = http.StatusBadRequest
-	}
+	writePgError(w, err)
+}
+
+func writeDialError(w http.ResponseWriter, err error) {
+	status, resp := DialErrorResponse(err)
 	writeJSON(w, status, resp)
 }
 
-// classifyPgErrorStatus maps a SQLSTATE code prefix to an HTTP status.
-func classifyPgErrorStatus(code string) int {
-	switch {
-	case strings.HasPrefix(code, "28"): // authentication
-		return 401
-	case strings.HasPrefix(code, "42"): // syntax/access
-		return 400
-	case strings.HasPrefix(code, "22"): // data exception
-		return 400
-	case strings.HasPrefix(code, "23"): // integrity constraint
-		return 400
-	case strings.HasPrefix(code, "53"): // insufficient resources
-		return 503
-	case strings.HasPrefix(code, "57"): // operator intervention
-		return 503
-	case code == "08P01": // protocol violation, caused by the request
-		return 400
-	case strings.HasPrefix(code, "08"): // connection exception
-		return 504
-	default:
-		return 400
+func errorResponse(err error, dialing bool) (int, ErrorResponse) {
+	if errors.Is(err, ErrQueryCancelled) {
+		code := "08P01"
+		return http.StatusBadRequest, ErrorResponse{Message: queryCancelledMessage, Code: &code}
 	}
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
+		status := http.StatusBadRequest
+		if dialing && !dialErrorIsTheCallers(pgErr.Code) {
+			status = http.StatusInternalServerError
+		}
+		return status, pgErrorBody(pgErr)
+	}
+
+	// pgx rejects a parameter count that disagrees with the statement before
+	// PostgreSQL sees it, with a different message in each query mode. PostgreSQL's own answer is a protocol violation, and
+	// the driver only reads the code from a 400.
+	if paramCountMismatch.MatchString(err.Error()) {
+		code, severity := "08P01", "ERROR"
+		return http.StatusBadRequest, ErrorResponse{Message: err.Error(), Code: &code, Severity: &severity}
+	}
+
+	// Non-PG errors are classified by message pattern and sanitized, because
+	// the underlying text can carry a connection string.
+	status, msg, code := classifyError(err, dialing)
+	resp := ErrorResponse{Message: SanitizeError(msg)}
+	if code != "" {
+		resp.Code = &code
+	}
+	return status, resp
 }
 
-// classifyError determines the HTTP status and message for non-PG errors.
-func classifyError(err error) (int, string) {
+// dialErrorIsTheCallers reports an unknown database or failed authentication, the connect errors a request causes.
+func dialErrorIsTheCallers(code string) bool {
+	return code == "3D000" || strings.HasPrefix(code, "28")
+}
+
+func pgErrorBody(pgErr *pgconn.PgError) ErrorResponse {
+	resp := ErrorResponse{
+		Message:  pgErr.Message,
+		Code:     &pgErr.Code,
+		Severity: &pgErr.Severity,
+	}
+	// Optional fields are populated only when PostgreSQL sent them, so the
+	// JSON omits them rather than carrying empty strings the driver would
+	// surface as blank values on NeonDbError.
+	for _, f := range []struct {
+		src string
+		dst **string
+	}{
+		{pgErr.Detail, &resp.Detail},
+		{pgErr.Hint, &resp.Hint},
+		{pgErr.Where, &resp.Where},
+		{pgErr.SchemaName, &resp.SchemaName},
+		{pgErr.TableName, &resp.TableName},
+		{pgErr.ColumnName, &resp.ColumnName},
+		{pgErr.DataTypeName, &resp.DataTypeName},
+		{pgErr.ConstraintName, &resp.ConstraintName},
+		{pgErr.InternalQuery, &resp.InternalQuery},
+		{pgErr.File, &resp.File},
+		{pgErr.Routine, &resp.Routine},
+	} {
+		if f.src != "" {
+			v := f.src
+			*f.dst = &v
+		}
+	}
+	// The three numeric fields the client reads. They are int32 on the
+	// PostgreSQL error and strings on the client's object, and zero means
+	// absent rather than a real position, so they are converted here
+	// rather than left unpopulated as they were.
+	for _, f := range []struct {
+		src int32
+		dst **string
+	}{
+		{pgErr.Position, &resp.Position},
+		{pgErr.InternalPosition, &resp.InternalPosition},
+		{pgErr.Line, &resp.Line},
+	} {
+		if f.src != 0 {
+			v := strconv.FormatInt(int64(f.src), 10)
+			*f.dst = &v
+		}
+	}
+	return resp
+}
+
+// classifyError maps a non-PG error to status, message and SQLSTATE; a timeout is a 400 with 08P01, as Neon reports a cancelled query.
+func classifyError(err error, dialing bool) (int, string, string) {
 	msg := err.Error()
 	switch {
+	case errors.Is(err, ErrResponseTooLarge):
+		return http.StatusInsufficientStorage, msg, ""
+	case errors.Is(err, context.DeadlineExceeded),
+		strings.Contains(msg, "context deadline exceeded"),
+		strings.Contains(msg, "timeout"):
+		if dialing {
+			return http.StatusBadRequest, "query cancelled while connecting: the request timed out", "08P01"
+		}
+		return http.StatusBadRequest, "query cancelled: the request timed out", "08P01"
+	case strings.Contains(msg, "password authentication failed"):
+		return http.StatusBadRequest, "authentication failed", ""
 	case strings.Contains(msg, "connection refused"),
 		strings.Contains(msg, "no such host"),
 		strings.Contains(msg, "connection reset"):
-		return 504, "upstream connection failed"
-	case strings.Contains(msg, "context deadline exceeded"),
-		strings.Contains(msg, "timeout"):
-		return 504, "upstream connection timed out"
-	case strings.Contains(msg, "password authentication failed"):
-		return 401, "authentication failed"
-	case errors.Is(err, ErrResponseTooLarge):
-		return 507, msg
+		if dialing {
+			return http.StatusInternalServerError, "upstream connection failed", ""
+		}
+		return http.StatusBadRequest, "upstream connection lost", ""
 	default:
-		return 500, "internal server error"
+		return http.StatusInternalServerError, "internal server error", ""
 	}
 }
 

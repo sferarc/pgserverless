@@ -220,7 +220,7 @@ func TestApplicationNameReachesTheUpstream(t *testing.T) {
 	assert.Equal(t, "pgserverless-test", pg.StartupParam("application_name"))
 }
 
-func TestRejectedCredentialsAre401AndReachTheDialHook(t *testing.T) {
+func TestRejectedCredentialsAre400AndReachTheDialHook(t *testing.T) {
 	pg := pgfake.NewRejectingAuth(t, "28P01", "password authentication failed")
 	static := StaticUpstream(pg.Addr())
 	var hooked error
@@ -233,20 +233,20 @@ func TestRejectedCredentialsAre401AndReachTheDialHook(t *testing.T) {
 
 	rec := doSQL(e, `{"query":"SELECT 1"}`, nil)
 
-	require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	require.Error(t, hooked)
 	resp := decodeError(t, rec)
 	require.NotNil(t, resp.Code)
 	assert.Equal(t, "28P01", *resp.Code)
 }
 
-func TestDialToAnUnreachableUpstreamIs504WithoutLeakingTheAddress(t *testing.T) {
+func TestDialToAnUnreachableUpstreamIs500WithoutLeakingTheAddress(t *testing.T) {
 	e := echo.New()
 	NewHandler(StaticUpstream("127.0.0.1:1")).Register(e)
 
 	rec := doSQL(e, `{"query":"select 1"}`, nil)
 
-	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "127.0.0.1")
 	assert.NotContains(t, rec.Body.String(), "p@")
 }

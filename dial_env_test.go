@@ -57,7 +57,7 @@ func TestSQLNeverFallsBackToTheServersLibpqHost(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
+	assert.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
 	assert.Empty(t, other.StartupParam("user"), "the query reached the server PGHOST names")
 }
 

@@ -4,7 +4,7 @@ Checks a pgserverless server against the public [`@neondatabase/serverless`](htt
 
 The suite drives one `DATABASE_URL` through three layers: the HTTP `neon()` function, the WebSocket `Client` and `Pool`, and ecosystem clients (Drizzle, Kysely, Waddler). It creates and drops tables, so point it at a disposable database.
 
-It complements the Go corpus in [`spec/pgserverless`](../../../../spec/pgserverless), which pins the wire shapes. This suite pins what the real driver does with them.
+It complements the protocol corpus in [`spec`](../spec), which pins the wire shapes. This suite pins what the real driver does with them.
 
 ## Run it against the Go server
 

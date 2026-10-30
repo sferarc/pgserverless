@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sferarc/pgserverless/spec/schema.json",
+  "title": "Postgres serverless protocol conformance corpus",
+  "description": "One corpus document: fixtures that put a real PostgreSQL into a known state, and cases that each describe one complete HTTP exchange against a server in that state. See CONFORMANCE.md for why cases are shaped this way, in particular why expected values carry JSON text rather than parsed values.",
+  "type": "object",
+  "required": ["spec_version", "version", "about", "fixtures", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "The SPEC.md version these cases check, MAJOR.MINOR.PATCH. It moves with the spec, not with any implementation."
+    },
+    "version": {
+      "type": "integer",
+      "description": "Corpus version. Cases may be added within a version; an existing case's expectation changes only with a version bump, so a report against v1 stays meaningful."
+    },
+    "about": { "type": "string" },
+    "fixtures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fixture" }
+    },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "required": ["name", "sql"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "sql": {
+          "type": "string",
+          "description": "Idempotent SQL creating and populating the fixture's tables. Runs against a scratch database that several runs may share, so it must tolerate already existing."
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "required": ["id", "level", "spec", "request", "expect"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "group/name. Stable, so a report can cite it."
+        },
+        "level": {
+          "type": "integer",
+          "enum": [1, 2, 3, 4],
+          "description": "Conformance level this case belongs to. See SPEC.md section 10."
+        },
+        "spec": {
+          "type": "string",
+          "description": "The SPEC.md section this case pins, for example \"6.1\". A failure should point at a rule, not at a test name."
+        },
+        "note": {
+          "type": "string",
+          "description": "Present when the case is not self-evident. Read these."
+        },
+        "fixture": {
+          "type": "string",
+          "description": "Name of the fixture this case needs. Omitted when the case needs no tables."
+        },
+        "requires": {
+          "type": "string",
+          "enum": ["unreachable_upstream", "refusing_admission", "websocket"],
+          "description": "A condition the harness must arrange that is configuration rather than data. A harness that cannot arrange it MUST report the case skipped, never passed."
+        },
+        "compare": {
+          "type": "string",
+          "enum": ["exact", "parses_equal"],
+          "default": "exact",
+          "description": "exact compares the serialized JSON. parses_equal is for the spellings SPEC.md Appendix B leaves unsettled: the harness parses both sides as JSON and also accepts the alternative spellings a value lists in `also`. A report counts these separately."
+        },
+        "request": { "$ref": "#/$defs/request" },
+        "expect": { "$ref": "#/$defs/expect" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "enum": ["/sql", "/v2"]
+        },
+        "method": {
+          "type": "string",
+          "enum": ["POST", "GET"],
+          "default": "POST"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Symbolic, not literal. The harness decides whether to send the vendor-prefixed or unprefixed spelling, which is how the same corpus tests both and their precedence without duplicating cases.",
+          "properties": {
+            "raw_text": { "type": "boolean" },
+            "array_mode": { "type": "boolean" },
+            "batch_isolation_level": {
+              "type": "string",
+              "enum": [
+                "ReadUncommitted",
+                "ReadCommitted",
+                "RepeatableRead",
+                "Serializable"
+              ]
+            },
+            "batch_read_only": { "type": ["boolean", "string"] },
+            "batch_deferrable": { "type": ["boolean", "string"] },
+            "spelling": {
+              "type": "string",
+              "enum": ["prefixed", "unprefixed", "both"],
+              "default": "prefixed",
+              "description": "Which header spelling to send. \"both\" sends conflicting values to test that the unprefixed one wins."
+            },
+            "omit_connection_string": {
+              "type": "boolean",
+              "description": "Send no connection string at all, to test admission's handling of a missing one."
+            }
+          }
+        },
+        "body": {
+          "description": "The request body, sent verbatim as JSON. A string here is sent as a raw body, which is how malformed-JSON cases are expressed.",
+          "type": ["object", "string"]
+        }
+      }
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["status"], "not": { "required": ["status_class"] } },
+        { "required": ["status_class"], "not": { "required": ["status"] } }
+      ],
+      "properties": {
+        "status": {
+          "type": "integer",
+          "description": "Required HTTP status. For error cases whose status is a documented server choice (SPEC.md 7.2), use status_class instead."
+        },
+        "status_class": {
+          "type": "string",
+          "enum": ["error"],
+          "description": "Accept any 4xx or 5xx. Used where SPEC.md 7.2 leaves the mapping to the implementation but still requires the error shape."
+        },
+        "command": { "type": "string" },
+        "row_count": { "type": ["integer", "null"] },
+        "row_as_array": { "type": "boolean" },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "data_type_id": { "type": "integer" }
+            }
+          },
+          "description": "Checked field by field, in order. Only the members listed are compared, since tableID and columnID vary by database."
+        },
+        "rows": {
+          "type": "array",
+          "description": "Row by row. An object-mode row is an object keyed by column name; an array-mode row is an array. Each value is a json-wrapper (see json_value) so the encoding is pinned, which is the whole point: \"9007199254740993\" and 9007199254740993 are different answers.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": { "$ref": "#/$defs/json_value" }
+              },
+              {
+                "type": "array",
+                "items": { "$ref": "#/$defs/json_value" }
+              }
+            ]
+          }
+        },
+        "results": {
+          "type": "array",
+          "description": "For a batch: one entry per statement, each shaped like a single-statement expect.",
+          "items": { "$ref": "#/$defs/expect" }
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "For an error response. Only the members present are compared. Field names are the client's, per SPEC.md 7.1.",
+          "properties": {
+            "message_contains": { "type": "string" },
+            "code": { "type": "string" },
+            "severity": { "type": "string" },
+            "has_fields": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "severity",
+                  "code",
+                  "detail",
+                  "hint",
+                  "position",
+                  "internalPosition",
+                  "internalQuery",
+                  "where",
+                  "schema",
+                  "table",
+                  "column",
+                  "dataType",
+                  "constraint",
+                  "file",
+                  "line",
+                  "routine"
+                ]
+              },
+              "description": "Members that must be present and non-null. This is what catches a server emitting schemaName where the client reads schema."
+            },
+            "must_not_contain": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Substrings that must not appear anywhere in the response, used to check that a connection string is not leaked in an error."
+            }
+          }
+        },
+        "websocket": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "For level 4 handshake cases.",
+          "properties": {
+            "upgraded": { "type": "boolean" },
+            "subprotocol": { "type": "string" },
+            "ssl_request_declined": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "json_value": {
+      "type": "object",
+      "required": ["json"],
+      "additionalProperties": false,
+      "description": "A value whose JSON encoding is pinned. `json` holds the exact JSON text the server must produce for this value. Comparing serialized text rather than parsed values is deliberate: most languages cannot tell a JSON string from a JSON number after parsing, and that distinction is the single most important rule in the spec.",
+      "properties": {
+        "json": { "type": "string" },
+        "also": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Other JSON texts a server may emit for this value. Honoured only when the case's compare is parses_equal, and only for spellings SPEC.md Appendix B leaves unsettled."
+        }
+      }
+    }
+  }
+}

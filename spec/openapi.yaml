@@ -1,0 +1,499 @@
+openapi: 3.0.3
+info:
+  title: Postgres serverless HTTP and WebSocket protocol
+  version: "0.1.0"
+  description: |
+    OpenAPI description of the protocol specified in SPEC.md, at the same
+    version. SPEC.md is the normative text; where this file and SPEC.md differ,
+    SPEC.md wins and this file is the one to fix.
+
+    | Transport | Path         | Carries                                                   |
+    | --------- | ------------ | --------------------------------------------------------- |
+    | HTTP      | `POST /sql`  | One request, one or more statements, JSON in and out      |
+    | WebSocket | `GET /v2`    | The PostgreSQL frontend/backend protocol, tunnelled       |
+
+    Every header below is accepted under a vendor-prefixed spelling
+    (`Neon-Connection-String`) and an unprefixed one (`Connection-String`).
+    Where both are present the unprefixed spelling wins (SPEC.md 4.1). OpenAPI
+    cannot express that equivalence, so both spellings are listed.
+
+    Which upstream a request runs against, and whether it may run at all, is
+    admission (SPEC.md 3): deployment policy that consumes `Connection-String`
+    and `Authorization` and is out of scope here, except that its refusals use
+    the error shape.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  contact:
+    name: pgserverless
+    url: https://github.com/sferarc/pgserverless
+
+servers:
+  - url: "https://{host}"
+    description: Any conforming server
+    variables:
+      host:
+        default: localhost
+
+# Credentials are consumed by admission, not by an OpenAPI security scheme.
+security: []
+
+tags:
+  - name: SQL
+    description: HTTP SQL execution (SPEC.md 4, 5, 7, 8)
+  - name: WebSocket
+    description: The PostgreSQL protocol over WebSocket (SPEC.md 9)
+
+paths:
+  /sql:
+    post:
+      operationId: executeSql
+      summary: Execute one statement or a batch
+      description: |
+        A body with `query` runs one statement. A body with `queries` runs a
+        batch as one transaction (SPEC.md 8); the presence of `queries` selects
+        batch mode.
+
+        `Raw-Text-Output: true` selects raw text mode, where every value is the
+        PostgreSQL text form as a JSON string (SPEC.md 5.3). Without it the
+        server decodes values under the rules of SPEC.md 6.
+      tags:
+        - SQL
+      parameters:
+        - $ref: "#/components/parameters/ConnectionString"
+        - $ref: "#/components/parameters/NeonConnectionString"
+        - $ref: "#/components/parameters/RawTextOutput"
+        - $ref: "#/components/parameters/NeonRawTextOutput"
+        - $ref: "#/components/parameters/ArrayMode"
+        - $ref: "#/components/parameters/NeonArrayMode"
+        - $ref: "#/components/parameters/BatchIsolationLevel"
+        - $ref: "#/components/parameters/NeonBatchIsolationLevel"
+        - $ref: "#/components/parameters/BatchReadOnly"
+        - $ref: "#/components/parameters/NeonBatchReadOnly"
+        - $ref: "#/components/parameters/BatchDeferrable"
+        - $ref: "#/components/parameters/NeonBatchDeferrable"
+        - $ref: "#/components/parameters/Authorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SQLRequest"
+            examples:
+              singleQuery:
+                summary: One parameterised statement
+                value:
+                  query: "SELECT id, email FROM users WHERE id = $1"
+                  params: [42]
+              batchQueries:
+                summary: A batch, run as one transaction
+                value:
+                  queries:
+                    - query: "INSERT INTO t (a) VALUES ($1)"
+                      params: [1]
+                    - query: "SELECT count(*) FROM t"
+      responses:
+        "200":
+          description: |
+            One result object for a single statement, or `{"results": [...]}`
+            with one result object per statement, in order, for a batch.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/QueryResult"
+                  - $ref: "#/components/schemas/BatchResponse"
+        "400":
+          $ref: "#/components/responses/Error400"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+        "507":
+          $ref: "#/components/responses/Error"
+
+  /v2:
+    get:
+      operationId: websocketUpgrade
+      summary: Upgrade to the PostgreSQL protocol over WebSocket
+      description: |
+        Upgrades to a WebSocket carrying the PostgreSQL frontend/backend
+        protocol in binary frames, as a continuous stream rather than one
+        message per frame (SPEC.md 9). The server SHOULD negotiate the `pg`
+        subprotocol.
+
+        Admission runs before the upgrade. A multi-tenant server resolves the
+        target from the `Host` header, and a target it cannot resolve is
+        refused with an ordinary HTTP error response, never after a 101.
+
+        After the upgrade the server declines SSLRequest and GSSENCRequest with
+        a single `N` byte, and authentication runs inside the tunnelled
+        protocol, between the client and the upstream.
+      tags:
+        - WebSocket
+      parameters:
+        - name: Sec-WebSocket-Protocol
+          in: header
+          required: false
+          description: The client offers `pg`.
+          schema:
+            type: string
+            example: pg
+      responses:
+        "101":
+          description: Switching Protocols. The tunnel is open.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+
+components:
+  parameters:
+    ConnectionString:
+      name: Connection-String
+      in: header
+      required: false
+      description: |
+        A `postgres://` or `postgresql://` URL naming the upstream and the
+        credentials. Consumed by admission; client 1.1.0 always sends it.
+        Whether a server requires it is admission policy. A server MUST NOT log
+        it (SPEC.md 11).
+      schema:
+        type: string
+    NeonConnectionString:
+      name: Neon-Connection-String
+      in: header
+      required: false
+      description: Prefixed spelling of `Connection-String`.
+      schema:
+        type: string
+    RawTextOutput:
+      name: Raw-Text-Output
+      in: header
+      required: false
+      description: |
+        `true` selects raw text mode (SPEC.md 5.3); any other value, or none,
+        leaves it off. Client 1.1.0 always sends `true`. Raw text mode is
+        required at level 1.
+      schema:
+        type: string
+    NeonRawTextOutput:
+      name: Neon-Raw-Text-Output
+      in: header
+      required: false
+      description: Prefixed spelling of `Raw-Text-Output`.
+      schema:
+        type: string
+    ArrayMode:
+      name: Array-Mode
+      in: header
+      required: false
+      description: |
+        `true` selects positional rows, each an array in column order
+        (SPEC.md 5.1); any other value, or none, leaves it off. Client 1.1.0
+        always sends `true`.
+      schema:
+        type: string
+    NeonArrayMode:
+      name: Neon-Array-Mode
+      in: header
+      required: false
+      description: Prefixed spelling of `Array-Mode`.
+      schema:
+        type: string
+    BatchIsolationLevel:
+      name: Batch-Isolation-Level
+      in: header
+      required: false
+      description: |
+        Isolation level for a batch transaction, in the client's spelling. Any
+        other value MUST be refused with 400 (SPEC.md 8).
+      schema:
+        $ref: "#/components/schemas/IsolationLevel"
+    NeonBatchIsolationLevel:
+      name: Neon-Batch-Isolation-Level
+      in: header
+      required: false
+      description: Prefixed spelling of `Batch-Isolation-Level`.
+      schema:
+        $ref: "#/components/schemas/IsolationLevel"
+    BatchReadOnly:
+      name: Batch-Read-Only
+      in: header
+      required: false
+      description: |
+        Runs a batch `READ ONLY`, enforced by PostgreSQL. Accepts what a
+        standard boolean parser accepts (`true`, `True`, `1`, `false`, ...);
+        anything else MUST be refused with 400 rather than read as false
+        (SPEC.md 8).
+      schema:
+        type: string
+    NeonBatchReadOnly:
+      name: Neon-Batch-Read-Only
+      in: header
+      required: false
+      description: Prefixed spelling of `Batch-Read-Only`.
+      schema:
+        type: string
+    BatchDeferrable:
+      name: Batch-Deferrable
+      in: header
+      required: false
+      description: |
+        Runs a batch `DEFERRABLE`. Parsed and refused like `Batch-Read-Only`.
+        PostgreSQL applies it only to a `SERIALIZABLE READ ONLY` transaction.
+      schema:
+        type: string
+    NeonBatchDeferrable:
+      name: Neon-Batch-Deferrable
+      in: header
+      required: false
+      description: Prefixed spelling of `Batch-Deferrable`.
+      schema:
+        type: string
+    Authorization:
+      name: Authorization
+      in: header
+      required: false
+      description: |
+        `Bearer <token>`, sent when the client is configured with an auth
+        token. Consumed by admission. A server MUST NOT log it or forward it to
+        anyone but the party that validates it (SPEC.md 11).
+      schema:
+        type: string
+
+  responses:
+    Error:
+      description: |
+        An error in the shape of SPEC.md 7.1. Client 1.1.0 parses the body
+        structurally only on 400; on any other status it surfaces the body as
+        text (SPEC.md 7.2).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Error400:
+      description: |
+        A malformed request, a refused batch header, an oversized batch, a
+        cancelled or timed out request (`code` 08P01), or any PostgreSQL error a
+        statement raised, whatever its class (SPEC.md 7.2). The only status on
+        which the client reads `code`, `severity` and the other fields.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    IsolationLevel:
+      type: string
+      enum:
+        - ReadUncommitted
+        - ReadCommitted
+        - RepeatableRead
+        - Serializable
+
+    SQLRequest:
+      description: |
+        `query` for one statement, or `queries` for a batch. A body carrying
+        both is not produced by any client; `queries` selects batch mode.
+      type: object
+      properties:
+        query:
+          description: |
+            The statement. Required when `queries` is absent. It MAY be empty,
+            which is a query with no statement and gets the empty result (SPEC.md 4.2).
+          type: string
+        params:
+          $ref: "#/components/schemas/Params"
+        queries:
+          description: |
+            A non-empty batch. A server MAY cap its size and MUST answer 400
+            above the cap.
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/QueryItem"
+        arrayMode:
+          description: |
+            An extension, not part of the protocol: client 1.1.0 never sends it
+            and a server MAY ignore it (SPEC.md 4.1).
+          type: boolean
+
+    QueryItem:
+      description: One statement in a batch.
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          description: May be empty, under the same rule as `SQLRequest.query`.
+          type: string
+        params:
+          $ref: "#/components/schemas/Params"
+        arrayMode:
+          description: An extension, as on `SQLRequest`.
+          type: boolean
+
+    Params:
+      description: |
+        Positional parameters binding `$1`, `$2` and so on. A JSON array
+        parameter is bound as a PostgreSQL array literal, nested arrays as
+        nested literals (SPEC.md 4.4).
+      type: array
+      items: {}
+
+    QueryResult:
+      description: The result of one statement (SPEC.md 5.1).
+      type: object
+      required:
+        - fields
+        - command
+        - rowCount
+        - rows
+        - rowAsArray
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldDescriptor"
+        command:
+          description: The command tag's first word, for example `SELECT` or `INSERT`, and `""` for a query with no statement.
+          type: string
+        rowCount:
+          description: The count from the command tag, or null when the tag carries none.
+          type: integer
+          nullable: true
+        rows:
+          description: |
+            Never null; an empty result is `[]`. Each row is an array in column
+            order when array mode is on, otherwise an object keyed by column
+            name. Values follow SPEC.md 5.3 and 6.
+          type: array
+          items: {}
+        rowAsArray:
+          description: Whether rows are positional.
+          type: boolean
+
+    FieldDescriptor:
+      description: One result column (SPEC.md 5.2).
+      type: object
+      required:
+        - name
+        - tableID
+        - columnID
+        - dataTypeID
+        - dataTypeSize
+        - dataTypeModifier
+        - format
+      properties:
+        name:
+          type: string
+        tableID:
+          description: OID of the source table, 0 for a computed column.
+          type: integer
+          format: int64
+        columnID:
+          description: Attribute number in the source table, 0 for a computed column.
+          type: integer
+          format: int32
+        dataTypeID:
+          description: The type OID. In raw text mode it is the only thing telling a client how to parse a value.
+          type: integer
+          format: int64
+        dataTypeSize:
+          description: Type size, negative for variable length.
+          type: integer
+          format: int32
+        dataTypeModifier:
+          type: integer
+          format: int32
+        format:
+          description: Always `text` in the reference implementation. Whether `binary` is allowed is open (SPEC.md Appendix B.5).
+          type: string
+
+    BatchResponse:
+      description: The result of a batch (SPEC.md 8).
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          description: One result per statement, in the order sent.
+          type: array
+          items:
+            $ref: "#/components/schemas/QueryResult"
+
+    ErrorResponse:
+      description: |
+        Only `message` is required. For a PostgreSQL error the server SHOULD
+        include the rest, under these names, which are the client's rather than
+        PostgreSQL's (SPEC.md 7.1). The numeric ones are decimal strings.
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+        severity:
+          type: string
+          nullable: true
+        code:
+          description: SQLSTATE.
+          type: string
+          nullable: true
+        detail:
+          type: string
+          nullable: true
+        hint:
+          type: string
+          nullable: true
+        position:
+          type: string
+          nullable: true
+        internalPosition:
+          type: string
+          nullable: true
+        internalQuery:
+          type: string
+          nullable: true
+        where:
+          type: string
+          nullable: true
+        schema:
+          type: string
+          nullable: true
+        table:
+          type: string
+          nullable: true
+        column:
+          type: string
+          nullable: true
+        dataType:
+          type: string
+          nullable: true
+        constraint:
+          type: string
+          nullable: true
+        file:
+          type: string
+          nullable: true
+        line:
+          type: string
+          nullable: true
+        routine:
+          type: string
+          nullable: true

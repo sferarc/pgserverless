@@ -8,6 +8,8 @@ A Cloudflare Worker, a Vercel Edge Function or a Deno Deploy isolate cannot open
 go get github.com/sferarc/pgserverless
 ```
 
+The protocol itself is specified in [`spec`](./spec): [SPEC.md](./spec/SPEC.md) is the normative text, and [cases/v1.json](./spec/cases/v1.json) is a language-neutral conformance corpus that [`cmd/pgsconform`](./cmd/pgsconform) runs against any server over the network. This package is one implementation of that spec, and the spec is versioned separately from it.
+
 ## Quick start
 
 Requires Go 1.26 or later.
@@ -184,7 +186,20 @@ pg.SetResult("SELECT id FROM users", pgfake.Result{
 
 Run the Go tests with `go test ./...`.
 
-## Run the conformance suite against your own server
+## Check a server against the protocol corpus
+
+The corpus in [`spec/cases/v1.json`](./spec/cases/v1.json) is the protocol's own test: each case is one HTTP exchange against a database in a known state, so it checks a server written in any language. `pgsconform` applies the corpus fixtures to a scratch database through `-dsn`, sends every case to the server, and reports the conformance levels passed. Point the server under test at the same database.
+
+```bash
+go run ./cmd/pgsconform -cases spec/cases/v1.json \
+  -server http://127.0.0.1:4000 \
+  -dsn 'postgres://user:pass@127.0.0.1:5432/scratch' \
+  -report report.json
+```
+
+[spec/CONFORMANCE.md](./spec/CONFORMANCE.md) explains the case format, the levels and the report.
+
+## Run the driver conformance suite against your own server
 
 The suite in [`driver-conformance`](./driver-conformance) drives the real `@neondatabase/serverless` driver, Drizzle, Kysely and Waddler against one `DATABASE_URL`. It creates and drops tables, so point it at a disposable database. It needs Node and pnpm.
 
@@ -222,7 +237,7 @@ For a parity run, point `DATABASE_URL` at a Neon database and compare the two re
 
 Issues and pull requests are welcome here. `go test ./...` runs the unit and conformance tests with no database; the driver suite above needs one.
 
-The package is developed for and used in production by [PgBeam](https://pgbeam.com), which serves this protocol for every project on the platform.
+Used in production at [PgBeam](https://pgbeam.com).
 
 ## License
 

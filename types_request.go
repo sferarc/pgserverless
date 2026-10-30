@@ -58,7 +58,7 @@ type ErrorResponse struct {
 	// The client copies `schema`, `table`, `column`, `dataType` and
 	// `constraint` onto its error object; a server sending `schemaName` and
 	// the rest is sending fields it silently drops, so every one of them
-	// arrived as undefined. See SPEC.md Appendix A.1.
+	// arrived as undefined. See spec/SPEC.md Appendix A.1.
 	SchemaName     *string `json:"schema,omitempty"`
 	TableName      *string `json:"table,omitempty"`
 	ColumnName     *string `json:"column,omitempty"`

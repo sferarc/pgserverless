@@ -362,7 +362,7 @@ func TestConformance_ErrorResponse_FullPgError(t *testing.T) {
 	e := newConformanceServer(t, pg)
 
 	rec := doSQL(e, `{"query":"INSERT INTO users (id) VALUES (1)"}`, nil)
-	// 23xxx (integrity) maps to 400 per classifyPgErrorStatus.
+	// Every PostgreSQL error from a statement is a 400.
 	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 
 	var errResp ErrorResponse

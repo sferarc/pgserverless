@@ -1,6 +1,7 @@
 package pgserverless
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,24 +90,31 @@ func TestParseConnectionString(t *testing.T) {
 	}
 }
 
-func TestClassifyPgErrorStatus(t *testing.T) {
+func TestPgErrorStatusMatchesNeon(t *testing.T) {
 	tests := []struct {
-		code   string
-		status int
+		code      string
+		statement int
+		dial      int
 	}{
-		{"28P01", 401},
-		{"42601", 400},
-		{"22P02", 400},
-		{"23505", 400},
-		{"53300", 503},
-		{"57014", 503},
-		{"08006", 504},
-		{"08P01", 400},
-		{"XX000", 400},
+		{"28P01", 400, 400},
+		{"3D000", 400, 400},
+		{"42601", 400, 500},
+		{"23505", 400, 500},
+		{"53300", 400, 500},
+		{"57014", 400, 500},
+		{"08006", 400, 500},
+		{"08P01", 400, 500},
+		{"XX000", 400, 500},
 	}
 	for _, tt := range tests {
 		t.Run(tt.code, func(t *testing.T) {
-			assert.Equal(t, tt.status, classifyPgErrorStatus(tt.code))
+			err := &pgconn.PgError{Code: tt.code, Message: "m", Severity: "ERROR"}
+			status, resp := PgErrorResponse(err)
+			assert.Equal(t, tt.statement, status)
+			require.NotNil(t, resp.Code)
+			assert.Equal(t, tt.code, *resp.Code)
+			status, _ = DialErrorResponse(err)
+			assert.Equal(t, tt.dial, status)
 		})
 	}
 }
@@ -169,21 +177,26 @@ func FuzzSanitizeError(f *testing.F) {
 
 func TestClassifyError(t *testing.T) {
 	tests := []struct {
-		err    error
-		status int
+		err       error
+		statement int
+		dial      int
+		code      string
 	}{
-		{errors.New("connection refused"), 504},
-		{errors.New("no such host"), 504},
-		{errors.New("context deadline exceeded"), 504},
-		{errors.New("timeout occurred"), 504},
-		{errors.New("password authentication failed"), 401},
-		{ErrResponseTooLarge, 507},
-		{errors.New("something unknown"), 500},
+		{errors.New("connection refused"), 400, 500, ""},
+		{errors.New("no such host"), 400, 500, ""},
+		{context.DeadlineExceeded, 400, 400, "08P01"},
+		{errors.New("timeout occurred"), 400, 400, "08P01"},
+		{errors.New("password authentication failed"), 400, 400, ""},
+		{ErrResponseTooLarge, 507, 507, ""},
+		{errors.New("something unknown"), 500, 500, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.err.Error(), func(t *testing.T) {
-			status, _ := classifyError(tt.err)
-			assert.Equal(t, tt.status, status)
+			status, _, code := classifyError(tt.err, false)
+			assert.Equal(t, tt.statement, status)
+			assert.Equal(t, tt.code, code)
+			status, _, _ = classifyError(tt.err, true)
+			assert.Equal(t, tt.dial, status)
 		})
 	}
 }
