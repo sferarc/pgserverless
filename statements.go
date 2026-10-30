@@ -2,6 +2,7 @@ package pgserverless
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -14,40 +15,54 @@ var errMultipleCommands = &pgconn.PgError{
 	Message:  "cannot insert multiple commands into a prepared statement",
 }
 
-// errEmptyBatchItem refuses a batch item with no statement, which a joined
-// simple query would skip, shifting every later result onto the wrong item.
-var errEmptyBatchItem = &pgconn.PgError{
-	Severity: "ERROR",
-	Code:     "42601",
-	Message:  "empty query in batch",
+// bindCountError is what PostgreSQL answers when parameters are bound to a
+// query with no statement, as Neon binds every query's parameters.
+func bindCountError(params int) *pgconn.PgError {
+	return &pgconn.PgError{
+		Severity: "ERROR",
+		Code:     "08P01",
+		Message:  fmt.Sprintf(`bind message supplies %d parameters, but prepared statement "" requires 0`, params),
+	}
+}
+
+// checkEmptyQueryParams refuses parameters for the empty string, which pgx
+// sends as a simple Query that cannot carry them.
+func checkEmptyQueryParams(sql string, params int) error {
+	if sql == "" && params > 0 {
+		return bindCountError(params)
+	}
+	return nil
 }
 
 // checkSingleStatement refuses a query a simple Query message would run as
 // several statements, as the extended protocol Neon uses would.
-func checkSingleStatement(count func(string) (int, error), sql string) error {
+func checkSingleStatement(count func(string) (int, error), sql string, params int) error {
 	n, err := countStatements(count, sql)
-	if err != nil {
+	switch {
+	case err != nil:
 		return err
-	}
-	if n > 1 {
+	case n == 0 && params > 0:
+		return bindCountError(params)
+	case n > 1:
 		return errMultipleCommands
 	}
 	return nil
 }
 
-// checkBatchItem refuses a batch item that is not one complete statement, so
-// that joining the items with ';' into one simple query keeps their boundaries.
-func checkBatchItem(count func(string) (int, error), sql string) error {
+// checkBatchItem refuses a batch item that is more than one complete statement,
+// so that joining the items with ';' into one simple query keeps their
+// boundaries, and reports an item with none, which the join would drop.
+func checkBatchItem(count func(string) (int, error), sql string, params int) (empty bool, err error) {
 	n, err := countStatements(count, sql)
 	switch {
 	case err != nil:
-		return err
-	case n == 0:
-		return errEmptyBatchItem
+		return false, err
+	case n == 0 && params > 0:
+		return false, bindCountError(params)
 	case n > 1:
-		return errMultipleCommands
+		return false, errMultipleCommands
 	}
-	return nil
+	return n == 0, nil
 }
 
 // countStatements refuses sql that count cannot parse rather than sending it:

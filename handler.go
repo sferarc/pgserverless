@@ -342,7 +342,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 		executeBatch(w, conn, queryCtx, req.Queries, arrayMode, rawText, txnOpts, budget)
 		return
 	case simple:
-		if err := checkSingleStatement(count, *req.Query); err != nil {
+		if err := checkSingleStatement(count, *req.Query, len(req.Params)); err != nil {
 			writePgError(w, err)
 			return
 		}
@@ -383,7 +383,8 @@ func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 	}
 
 	isBatch := req.Queries != nil
-	if !isBatch && (req.Query == nil || *req.Query == "") {
+	// An empty query is valid: Neon answers it 200 with no fields and no command.
+	if !isBatch && req.Query == nil {
 		return nil, ErrMissingQuery
 	}
 	if isBatch && len(req.Queries) > MaxBatchQueries {

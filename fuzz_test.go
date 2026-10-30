@@ -38,7 +38,7 @@ func FuzzDecodeSQLRequest(f *testing.F) {
 			}
 			return
 		}
-		if got.Queries == nil && (got.Query == nil || *got.Query == "") {
+		if got.Queries == nil && got.Query == nil {
 			t.Fatal("accepted a request with neither a query nor a batch")
 		}
 		if len(got.Queries) > MaxBatchQueries {

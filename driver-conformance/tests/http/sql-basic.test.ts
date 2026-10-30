@@ -256,6 +256,14 @@ describe("HTTP SQL Basic Query Tests", () => {
     expect(result).toEqual([]);
   });
 
+  test("empty query string returns an empty result", async () => {
+    const result = await sql.query("", [], { fullResults: true });
+    expect(result.rows).toEqual([]);
+    expect(result.fields).toEqual([]);
+    expect(result.command).toBe("");
+    expect(result.rowCount).toBeNull();
+  });
+
   test("comment-only query returns result", async () => {
     const result = await sql`-- comment
 SELECT 1 as val`;

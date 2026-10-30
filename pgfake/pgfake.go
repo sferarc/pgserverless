@@ -406,7 +406,11 @@ func (f *PG) handle(conn net.Conn) {
 			// own result set; a single ReadyForQuery terminates the whole
 			// simple-query message. On the first error PostgreSQL stops
 			// executing the remaining statements.
-			for _, stmt := range splitSimpleQuery(m.String) {
+			stmts := splitSimpleQuery(m.String)
+			if len(stmts) == 0 {
+				be.Send(&pgproto3.EmptyQueryResponse{})
+			}
+			for _, stmt := range stmts {
 				f.writeResult(be, s, stmt, true, nil)
 				if s.aborted {
 					break
@@ -482,6 +486,10 @@ func (f *PG) handle(conn net.Conn) {
 			}
 
 		case *pgproto3.Execute:
+			if strings.TrimSpace(s.portalSQL) == "" {
+				be.Send(&pgproto3.EmptyQueryResponse{})
+				break
+			}
 			f.writeResult(be, s, s.portalSQL, false, s.resultFormats)
 
 		case *pgproto3.Sync:

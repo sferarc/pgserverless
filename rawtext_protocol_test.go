@@ -257,9 +257,8 @@ func TestConformance_Governed_BatchItemWithTwoStatementsRejected(t *testing.T) {
 	assert.Empty(t, pg.SimpleSQL())
 }
 
-// An item the parser refuses or finds empty is refused before anything is
-// sent: an unterminated comment or quote would run on into the next item, and
-// an empty one would shift every later result.
+// An item the parser refuses is refused before anything is sent: an
+// unterminated comment or quote would run on into the next item.
 func TestConformance_Governed_IncompleteBatchItemRejected(t *testing.T) {
 	for _, tc := range []struct {
 		name, item, message string
@@ -267,7 +266,6 @@ func TestConformance_Governed_IncompleteBatchItemRejected(t *testing.T) {
 		err                 error
 	}{
 		{"unparseable", "SELECT 1 /* open", "unterminated /* comment", 0, errors.New("unterminated /* comment")},
-		{"empty", "-- nothing", "empty query in batch", 0, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pg := pgfake.New(t)

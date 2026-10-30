@@ -16,6 +16,9 @@ func QueryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 }
 
 func queryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, arrayMode, rawText bool, budget *responseBudget) (*QueryResult, error) {
+	if err := checkEmptyQueryParams(query, len(params)); err != nil {
+		return nil, err
+	}
 	rows, err := conn.Query(ctx, query, params...)
 	if err != nil {
 		return nil, err
@@ -60,7 +63,9 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 
 	batch := &pgx.Batch{}
 	for _, q := range queries {
-		batch.Queue(q.Query, ConvertParams(q.Params)...)
+		if !emptyItem(q) {
+			batch.Queue(q.Query, ConvertParams(q.Params)...)
+		}
 	}
 
 	br := conn.SendBatch(ctx, batch)
@@ -68,6 +73,10 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 
 	results := make([]QueryResult, 0, len(queries))
 	for i := range queries {
+		if emptyItem(queries[i]) {
+			results = append(results, emptyResult(batchArrayMode(queries[i], arrayMode)))
+			continue
+		}
 		rows, err := br.Query()
 		if err != nil {
 			writeQueryError(ctx, w, err)
@@ -87,17 +96,23 @@ func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, qu
 
 // executeBatchSimple runs a simple-protocol batch the way executeBatch does,
 // as one simple query that pgx joins with ';', so a policy proxy still sees and
-// brackets the whole batch itself. Each item must be one complete statement,
-// and a newline on both sides of every ';' keeps a trailing -- comment from
-// swallowing the next item.
+// brackets the whole batch itself. Each item must be at most one complete
+// statement, an item with none is answered without being sent, and a newline on
+// both sides of every ';' keeps a trailing -- comment from swallowing the next
+// item.
 func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
 	// executeBatchTxn queues BEGIN before the items and may queue COMMIT after them.
 	txn := !opts.isDefault() || budget.capped()
 	joined := make([]QueryItem, len(queries))
 	for i, q := range queries {
-		if err := checkBatchItem(count, q.Query); err != nil {
+		empty, err := checkBatchItem(count, q.Query, len(q.Params))
+		if err != nil {
 			writeQueryError(ctx, w, err)
 			return
+		}
+		if empty {
+			joined[i] = QueryItem{ArrayMode: q.ArrayMode}
+			continue
 		}
 		if i > 0 || txn {
 			q.Query = "\n" + q.Query
@@ -125,7 +140,9 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 	batch := &pgx.Batch{}
 	batch.Queue(opts.beginSQL())
 	for _, q := range queries {
-		batch.Queue(q.Query, ConvertParams(q.Params)...)
+		if !emptyItem(q) {
+			batch.Queue(q.Query, ConvertParams(q.Params)...)
+		}
 	}
 	if !deferCommit {
 		batch.Queue("COMMIT")
@@ -142,6 +159,10 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 
 	results := make([]QueryResult, 0, len(queries))
 	for i := range queries {
+		if emptyItem(queries[i]) {
+			results = append(results, emptyResult(batchArrayMode(queries[i], arrayMode)))
+			continue
+		}
 		rows, err := br.Query()
 		if err != nil {
 			writeQueryError(ctx, w, err)
@@ -188,6 +209,10 @@ func executeBatchInOrder(w http.ResponseWriter, conn *pgx.Conn, ctx context.Cont
 
 	results := make([]QueryResult, 0, len(queries))
 	for _, q := range queries {
+		if err := checkEmptyQueryParams(q.Query, len(q.Params)); err != nil {
+			writeQueryError(ctx, w, err)
+			return
+		}
 		rows, err := conn.Query(ctx, q.Query, ConvertParams(q.Params)...)
 		if err != nil {
 			writeQueryError(ctx, w, err)
@@ -241,6 +266,18 @@ func stopOversized(ctx context.Context, conn *pgx.Conn, err error) {
 	if errors.Is(err, ErrResponseTooLarge) {
 		_ = conn.Close(ctx)
 	}
+}
+
+// emptyItem reports a batch item with no SQL, which the batch answers itself:
+// a simple-protocol batch joins its items with ';' and PostgreSQL skips an
+// empty one, which would shift every later result onto the wrong item.
+func emptyItem(q QueryItem) bool {
+	return q.Query == "" && len(q.Params) == 0
+}
+
+// emptyResult is what PostgreSQL's EmptyQueryResponse becomes, as Neon renders it.
+func emptyResult(arrayMode bool) QueryResult {
+	return QueryResult{Fields: []FieldDefinition{}, Rows: []any{}, RowAsArray: arrayMode}
 }
 
 // batchArrayMode resolves the effective array mode for one batch item: a
