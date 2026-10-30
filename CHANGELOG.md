@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+### Patch Changes
+
+- 1da3024: `POST /sql` with an empty `query` now answers 200 with `fields` and `rows` empty, `command` `""` and `rowCount` null, as Neon renders PostgreSQL's EmptyQueryResponse. It answered 400 `query is required`, so `sql.query("")` threw where it returns no rows on Neon. A batch item with no statement gets the same result in its own position, including in a simple-protocol batch, which used to refuse it with `empty query in batch`. Parameters bound to an empty query are refused with `08P01`, as PostgreSQL refuses them. A missing or null `query` is still 400.
+
 ## 0.3.1
 
 ### Patch Changes
