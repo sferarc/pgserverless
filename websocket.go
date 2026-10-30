@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 )
 
 // WebSocketPath is where the transport is mounted. The client's Pool and Client
-// types connect here.
+// types connect here by default; an upgrade on any other path is served too.
 const WebSocketPath = "/v2"
 
 // wsSubprotocol is negotiated on the upgrade. The client asks for it and a
@@ -65,7 +66,11 @@ func WithWebSocketAdmission(admit Admission) Option {
 	return func(h *Handler) { h.admitWS = admit }
 }
 
-// RegisterWebSocket mounts the WebSocket transport on e at GET /v2.
+// RegisterWebSocket mounts the WebSocket transport on e at GET /v2, and on
+// every path e has no route for when the request is a WebSocket upgrade. Neon's
+// proxy upgrades on any path, and the client's wsProxy setting picks the path,
+// so a client configured for another one ("/v1" in the client's own wsproxy
+// example) would otherwise get a 404.
 //
 // Register mounts the HTTP transport only. They are separate calls because a
 // deployment may want one without the other: a browser-facing endpoint may want
@@ -73,6 +78,42 @@ func WithWebSocketAdmission(admit Admission) Option {
 // tunnel alone.
 func (h *Handler) RegisterWebSocket(e *echo.Echo) {
 	e.GET(WebSocketPath, h.Upgrade)
+	e.RouteNotFound("/*", func(c echo.Context) error {
+		if !isWebSocketUpgrade(c.Request()) {
+			return echo.ErrNotFound
+		}
+		return h.Upgrade(c)
+	})
+}
+
+// upgradeAnyPath sends a WebSocket upgrade to upgrade whatever its path, and every other request to next.
+func upgradeAnyPath(next http.Handler, upgrade http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isWebSocketUpgrade(r) {
+			upgrade(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isWebSocketUpgrade reports whether r is a GET asking to switch to the WebSocket protocol.
+func isWebSocketUpgrade(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		headerHasToken(r.Header, "Connection", "upgrade") &&
+		headerHasToken(r.Header, "Upgrade", "websocket")
+}
+
+// headerHasToken reports whether any comma-separated value of the header is token, ignoring case.
+func headerHasToken(h http.Header, name, token string) bool {
+	for _, v := range h.Values(name) {
+		for part := range strings.SplitSeq(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Upgrade serves the WebSocket transport: it upgrades the connection, declines

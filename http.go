@@ -55,7 +55,8 @@ type httpHandler struct {
 }
 
 // NewHTTPHandler returns an http.Handler serving POST /sql and GET /v2, with
-// the driver's Neon-prefixed headers normalized. It mounts on an
+// the driver's Neon-prefixed headers normalized. A WebSocket upgrade is served
+// on any path, as Neon's proxy does. It mounts on an
 // http.ServeMux or any router, and needs no web framework.
 func NewHTTPHandler(admit HTTPAdmission, opts ...HTTPOption) http.Handler {
 	h := &httpHandler{admit: admit}
@@ -68,7 +69,7 @@ func NewHTTPHandler(admit HTTPAdmission, opts ...HTTPOption) http.Handler {
 		mux.HandleFunc("OPTIONS /sql", func(w http.ResponseWriter, r *http.Request) { servePreflight(w, r, h.corsOrigins) })
 	}
 	mux.HandleFunc("GET "+WebSocketPath, h.upgrade)
-	return NormalizeHTTPHeaders(mux)
+	return NormalizeHTTPHeaders(upgradeAnyPath(mux, h.upgrade))
 }
 
 func (h *httpHandler) query(w http.ResponseWriter, r *http.Request) {
