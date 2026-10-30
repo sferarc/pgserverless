@@ -35,6 +35,22 @@ func TestTLSMode(t *testing.T) {
 	}
 }
 
+func TestTLSModeReadsSSLModeAfterAPasswordURLParseRefuses(t *testing.T) {
+	dbURL := "postgres://u:50%off@db:5432/app?sslmode=disable"
+	if _, err := pgserverless.ParseConnectionString(dbURL); err != nil {
+		t.Fatalf("run() accepts this DATABASE_URL, so tlsMode must read it: %v", err)
+	}
+	if got := tlsMode(dbURL); got != pgserverless.TLSDisable {
+		t.Errorf("got %q, want %q", got, pgserverless.TLSDisable)
+	}
+	if got := tlsMode("postgres://u:50%off@db:5432/app?sslmode=require#x"); got != pgserverless.TLSRequire {
+		t.Errorf("sslmode=require: got %q", got)
+	}
+	if got := tlsMode("postgres://u:50%off@db:5432/app#?sslmode=disable"); got != pgserverless.TLSRequire {
+		t.Errorf("sslmode=disable in the fragment: got %q", got)
+	}
+}
+
 func TestTLSModeIgnoresPassword(t *testing.T) {
 	if got := tlsMode("postgres://u:sslmode=disable@db:5432/app"); got != pgserverless.TLSRequire {
 		t.Errorf("sslmode in password: got %q", got)
