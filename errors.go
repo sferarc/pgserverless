@@ -190,6 +190,7 @@ func SanitizeError(msg string) string {
 }
 
 // ParseConnectionString extracts host, user, password, database from a postgres:// URL.
+// Unlike net/url it accepts a password holding a bare '%' (50%off) or an unencoded ^, as Neon's proxy and libpq do.
 func ParseConnectionString(s string) (*ConnInfo, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -201,35 +202,72 @@ func ParseConnectionString(s string) (*ConnInfo, error) {
 		return nil, fmt.Errorf("%w: must start with postgres:// or postgresql://", ErrInvalidConnectionString)
 	}
 
-	u, err := url.Parse(s)
+	_, authority, _ := strings.Cut(s, "://")
+	var path string
+	if i := strings.IndexAny(authority, "/?#"); i >= 0 {
+		authority, path = authority[:i], authority[i:]
+	}
+	var userinfo string
+	if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+		userinfo, authority = authority[:at], authority[at+1:]
+	}
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+
+	// Only the host and port go through net/url, so its error never quotes the password.
+	u, err := url.Parse("postgres://" + authority)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidConnectionString, err)
 	}
 
-	password, _ := u.User.Password()
+	username, password, _ := strings.Cut(userinfo, ":")
+	username, password = unescapeLenient(username), unescapeLenient(password)
+	database := unescapeLenient(strings.TrimPrefix(path, "/"))
 	host := u.Hostname()
 	port := u.Port()
 	if port == "" {
 		port = "5432"
 	}
-
-	database := strings.TrimPrefix(u.Path, "/")
 	if database == "" {
-		database = u.User.Username()
+		database = username
 	}
 
 	if host == "" {
 		return nil, fmt.Errorf("%w: missing host", ErrInvalidConnectionString)
 	}
-	if u.User.Username() == "" {
+	if username == "" {
 		return nil, fmt.Errorf("%w: missing user", ErrInvalidConnectionString)
+	}
+	// A NUL would end the startup packet field early, so libpq refuses %00 too.
+	if strings.ContainsRune(username+password+database, 0) {
+		return nil, fmt.Errorf("%w: %%00 is not allowed", ErrInvalidConnectionString)
 	}
 
 	return &ConnInfo{
 		Host:     host,
 		Port:     port,
-		User:     u.User.Username(),
+		User:     username,
 		Password: password,
 		Database: database,
 	}, nil
+}
+
+// unescapeLenient decodes every %XX escape and keeps any other character as written, as Neon's proxy does.
+func unescapeLenient(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+3], 16, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
