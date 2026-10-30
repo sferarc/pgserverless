@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- 5b0967b: Error statuses now follow section 7.2 of the protocol spec, which is the mapping Neon's proxy uses. The driver reads `code` and the other error fields only from a 400, so an error answered with any other status reached the caller as `Server error (HTTP status N)` with no SQLSTATE.
+
+  - `PgErrorResponse` and `HandlePgError` now give the statement mapping only: every PostgreSQL error is a 400. Class `28` was 401, classes `53` and `57` were 503, and class `08` other than `08P01` was 504. `POST /sql` already answered a statement's PostgreSQL error this way since 0.3.0; callers of these two functions now get the same answer.
+  - Failures that are not PostgreSQL errors, on `POST /sql` and through `PgErrorResponse`: a refused, reset or unresolvable upstream connection while running goes from 504 `upstream connection failed` to 400 `upstream connection lost`, a timeout goes from 504 `upstream connection timed out` to 400 with code `08P01`, and `password authentication failed` goes from 401 to 400. 507 for an oversized response and 500 for anything else are unchanged.
+  - New `DialErrorResponse` and `HandleDialError` give the connect mapping, and `POST /sql` now uses it for its upstream dial. An unknown database (`3D000`) or failed authentication (class `28`) is a 400, where class `28` was 401. Any other PostgreSQL error on connect is a 500, where it took its class's status: 503 for classes `53` and `57` (`53300` too many connections among them), 504 for class `08`, and 400 for the rest, such as `42501` when the role may not connect to the database. An unreachable upstream goes from 504 to 500, and a connect timeout from 504 to 400 with `08P01`. A caller that wrote connect failures through `HandlePgError` should switch to `HandleDialError`, or an upstream it cannot reach is answered 400 rather than 500.
+  - The protocol is now published with the module. `spec/SPEC.md` is the normative text at spec version 0.1.0, versioned separately in `spec/CHANGELOG.md`, with `spec/openapi.yaml` and `spec/schema.json`. `spec/cases/v1.json` is the language-neutral conformance corpus, 104 cases including four new `errors/*-is-400` cases, and `spec/CONFORMANCE.md` describes its format and levels. `cmd/pgsconform` runs the corpus against any server over HTTP.
+
+### Patch Changes
+
+- d5bd64c: A raw-text batch with no `Neon-Batch-*` header now runs inside `BEGIN` and `COMMIT`, as Neon's does, so `LOCK TABLE`, `SAVEPOINT` and `DECLARE CURSOR` work in `sql.transaction([...])`. It used to run as an implicit-transaction pipeline, which PostgreSQL refuses those statements in with `25P01`. The governed simple-protocol path is unchanged.
+
 ## 0.3.2
 
 ### Patch Changes
