@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- 3a7804a: An object-mode row's keys now come back in column order, as Neon writes them, instead of sorted by name. `select 2 as b, 1 as a` returned `{"a":1,"b":2}` and now returns `{"b":2,"a":1}`; a repeated column name is written twice, as on Neon. An object-mode row in `QueryResult.Rows` is an `ObjectRow` rather than a `map[string]any`.
+
+### Patch Changes
+
+- 2f656fc: `POST /sql` now opens its upstream session with `client_encoding=UTF8`. Without it PostgreSQL used the role's or database's encoding, so against a LATIN1 database every non-ASCII character in a result came back as U+FFFD and a non-ASCII parameter was stored garbled. A UTF8 database behaves as before.
+- 5c54033: `ParseConnectionString` reads the user, password and database the way Neon's proxy and libpq do. A password holding a `%` that starts no escape (`50%off`), or a character such as `^`, `{` or a non-ASCII letter left unencoded, used to fail the whole request with 400 `invalid connection string`, and that error quoted the password back. An escaped NUL (`%00`) is now refused, as libpq refuses it.
+- e3f8ca3: The `POST /sql` upstream dial now ignores the server process's own libpq environment. It built its configuration with `pgx.ParseConfig("")`, so `PGHOST` and `PGPORT` left fallback hosts that were tried when the real upstream failed, running the request on a different server, and `PGTZ`, `PGOPTIONS` and `PGAPPNAME` were sent as startup parameters on every connection.
+- 897a06d: A result field's `columnID` is now signed, as PostgreSQL sends it and Neon reports it. A system column such as `ctid` used to arrive as `65535` instead of `-1`, because the attribute number was read as an unsigned 16 bit integer. `FieldDefinition.ColumnID` is an `int16` rather than a `uint16`.
+- 4fd36b7: A single `POST /sql` statement whose result passes the response cap now answers 507 at once, as Neon does. It read the rest of the result before answering, so the database kept sending rows nobody would see, and a result still streaming when the request ended answered 400 `Query cancelled, connection was terminated` instead of 507.
+- fec4a8e: A `POST /sql` statement that PostgreSQL fails now answers 400 with its SQLSTATE whatever the class, as Neon does. A `57014` statement timeout, an out of memory `53200` or a `57P01` shutdown came back as 503 or 504, and the driver reads the error body only from a 400, so it threw `Server error (HTTP status 503)` with no `code`. A failed connect keeps its status (401 for rejected credentials).
+- 8bba717: The WebSocket transport now upgrades on any path, as Neon's proxy does, not only on `/v2`. The client's `wsProxy` setting chooses the path, and its own documentation configures `/v1` (or a string that gets `?address=host:port` appended) for a self-hosted proxy, so those clients got a 404 instead of a tunnel. A request that is not a WebSocket upgrade still gets a 404 on a path nothing serves, and `RegisterWebSocket` only takes paths the Echo instance has no route for.
+- 26247d4: The WebSocket transport now forwards a `CancelRequest` to the upstream, as Neon does, so a client cancelling a statement over the tunnel stops it on the database. It used to be logged and dropped, and the statement ran to completion. Nothing is sent back to the cancelling connection, as with PostgreSQL itself.
+- d052a58: The WebSocket transport now closes a tunnel whose client does not send its StartupMessage within 30 seconds of the upgrade. A client that upgraded and stayed silent used to hold the connection and its goroutine until it hung up. The deadline ends with the startup, so an open session still has no time limit.
+
 ## 0.2.6
 
 ### Patch Changes
