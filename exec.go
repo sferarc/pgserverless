@@ -21,6 +21,7 @@ func queryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 		return nil, err
 	}
 	result, err := rowsToResult(rows, conn.TypeMap(), arrayMode, rawText, budget)
+	stopOversized(ctx, conn, err)
 	rows.Close()
 	if err != nil || rawText {
 		return result, err
@@ -147,10 +148,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 			return
 		}
 		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
-		if errors.Is(err, ErrResponseTooLarge) {
-			// Closing stops an oversized result instead of draining it.
-			_ = conn.Close(ctx)
-		}
+		stopOversized(ctx, conn, err)
 		rows.Close()
 		if err != nil {
 			writeQueryError(ctx, w, err)
@@ -196,10 +194,7 @@ func executeBatchInOrder(w http.ResponseWriter, conn *pgx.Conn, ctx context.Cont
 			return
 		}
 		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(q, arrayMode), false, budget)
-		if errors.Is(err, ErrResponseTooLarge) {
-			// Closing stops an oversized result instead of draining it.
-			_ = conn.Close(ctx)
-		}
+		stopOversized(ctx, conn, err)
 		rows.Close()
 		if err != nil {
 			writeQueryError(ctx, w, err)
@@ -239,6 +234,13 @@ func (b *responseBudget) add(row [][]byte) error {
 		return fmt.Errorf("%w (max is %d bytes)", ErrResponseTooLarge, b.max)
 	}
 	return nil
+}
+
+// stopOversized closes conn once a result passes the response cap, so rows.Close stops reading it instead of draining the rest.
+func stopOversized(ctx context.Context, conn *pgx.Conn, err error) {
+	if errors.Is(err, ErrResponseTooLarge) {
+		_ = conn.Close(ctx)
+	}
 }
 
 // batchArrayMode resolves the effective array mode for one batch item: a

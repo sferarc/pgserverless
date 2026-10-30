@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/sferarc/pgserverless/pgfake"
@@ -50,6 +51,30 @@ func TestResponseOverTheCapIs507(t *testing.T) {
 		} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
 				rec := doSQL(h, `{"query":"SELECT v FROM t"}`, headers)
+
+				require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
+				assert.Equal(t, "response is too large (max is 99 bytes)", decodeError(t, rec).Message)
+			})
+		}
+	}
+}
+
+// A statement whose result is still streaming past the cap must answer 507 at
+// once; draining the rest held the response until the request ended, which then
+// answered 400 Query cancelled.
+func TestSingleStatementOverTheCapStopsReading(t *testing.T) {
+	pg := pgfake.New(t)
+	streaming := tenTextRows()
+	streaming.HoldAfterRows = true
+	pg.SetResult("SELECT v FROM t", streaming)
+
+	for name, h := range cappedServers(pg, 99) {
+		for mode, headers := range map[string]map[string]string{
+			"native":   nil,
+			"raw text": driverHeaders,
+		} {
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				rec := doSQLUntil(t, h, `{"query":"SELECT v FROM t"}`, headers, 2*time.Second)
 
 				require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
 				assert.Equal(t, "response is too large (max is 99 bytes)", decodeError(t, rec).Message)

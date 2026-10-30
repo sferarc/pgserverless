@@ -84,6 +84,8 @@ type Result struct {
 	ParamOIDs []uint32
 	// WaitForCancel holds the statement until a CancelRequest for its session arrives, then fails it with 57014 as PostgreSQL does.
 	WaitForCancel bool
+	// HoldAfterRows sends Rows, then holds the statement as WaitForCancel does, like a result still streaming.
+	HoldAfterRows bool
 	// Requires is a statement creating an object this one uses; until the session has run it, Parse and Execute fail with 42P01.
 	Requires string
 }
@@ -579,13 +581,7 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 		return
 	}
 	if res.WaitForCancel {
-		_ = be.Flush()
-		select {
-		case <-s.cancelled:
-		case <-time.After(10 * time.Second):
-		}
-		s.aborted = true
-		be.Send(&pgproto3.ErrorResponse{Severity: "ERROR", Code: "57014", Message: "canceling statement due to user request"})
+		holdUntilCancelled(be, s)
 		return
 	}
 	if res.IsWrite {
@@ -606,11 +602,26 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 		}
 		be.Send(dr)
 	}
+	if res.HoldAfterRows {
+		holdUntilCancelled(be, s)
+		return
+	}
 	Tag := res.Tag
 	if Tag == "" {
 		Tag = "SELECT " + itoa(len(res.Rows))
 	}
 	be.Send(&pgproto3.CommandComplete{CommandTag: []byte(Tag)})
+}
+
+// holdUntilCancelled flushes what was sent, waits for a CancelRequest for s, then fails the statement with 57014 as PostgreSQL does.
+func holdUntilCancelled(be *pgproto3.Backend, s *session) {
+	_ = be.Flush()
+	select {
+	case <-s.cancelled:
+	case <-time.After(10 * time.Second):
+	}
+	s.aborted = true
+	be.Send(&pgproto3.ErrorResponse{Severity: "ERROR", Code: "57014", Message: "canceling statement due to user request"})
 }
 
 // missingRelation is PostgreSQL's answer for a statement naming an object that does not exist yet.
