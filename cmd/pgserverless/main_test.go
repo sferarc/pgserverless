@@ -27,10 +27,10 @@ func TestIsLoopback(t *testing.T) {
 }
 
 func TestTLSMode(t *testing.T) {
-	if got := tlsMode("postgres://u:p@db:5432/app?sslmode=disable"); got != pgserverless.TLSDisable {
+	if got := tlsFor("postgres://u:p@db:5432/app?sslmode=disable").mode; got != pgserverless.TLSDisable {
 		t.Errorf("sslmode=disable: got %q", got)
 	}
-	if got := tlsMode("postgres://u:p@db:5432/app"); got != pgserverless.TLSRequire {
+	if got := tlsFor("postgres://u:p@db:5432/app").mode; got != pgserverless.TLSRequire {
 		t.Errorf("no sslmode: got %q", got)
 	}
 }
@@ -43,8 +43,45 @@ func TestTLSModeFallsBackToTheClearOnlyWhenSSLModeAllowsIt(t *testing.T) {
 		"verify-ca":   pgserverless.TLSRequire,
 		"verify-full": pgserverless.TLSRequire,
 	} {
-		if got := tlsMode("postgres://u:p@db:5432/app?sslmode=" + mode); got != want {
+		if got := tlsFor("postgres://u:p@db:5432/app?sslmode=" + mode).mode; got != want {
 			t.Errorf("sslmode=%s: got %q, want %q", mode, got, want)
+		}
+	}
+}
+
+func TestTLSForChecksTheCertificateFromVerifyCAOrWithARootCert(t *testing.T) {
+	for query, want := range map[string]bool{
+		"":                                    false,
+		"?sslmode=disable":                    false,
+		"?sslmode=allow":                      true,
+		"?sslmode=prefer":                     true,
+		"?sslmode=require":                    true,
+		"?sslmode=verify-ca":                  false,
+		"?sslmode=verify-full":                false,
+		"?sslmode=require&sslrootcert=ca.pem": false,
+		"?sslmode=prefer&sslrootcert=system":  false,
+	} {
+		if got := tlsFor("postgres://u:p@db:5432/app" + query).skipVerify; got != want {
+			t.Errorf("%q: skipVerify = %v, want %v", query, got, want)
+		}
+	}
+}
+
+func TestAdmissionsCarryTheCertificateCheck(t *testing.T) {
+	db, err := pgserverless.ParseConnectionString("postgres://owner:secret@db.example.test:5433/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tls := tlsFor("postgres://owner:secret@db.example.test:5433/app?sslmode=require")
+	req := httptest.NewRequest(http.MethodPost, "/sql", nil)
+	req.Header.Set("Connection-String", "postgres://reader:pw@db.example.test/app")
+	for name, admit := range map[string]pgserverless.HTTPAdmission{"http": httpAdmission(db, tls), "websocket": wsAdmission(db, tls)} {
+		up, err := admit(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if up.TLSMode != pgserverless.TLSRequire || !up.InsecureSkipVerify {
+			t.Errorf("%s: got TLSMode %q InsecureSkipVerify %v, want require without the check", name, up.TLSMode, up.InsecureSkipVerify)
 		}
 	}
 }
@@ -52,21 +89,21 @@ func TestTLSModeFallsBackToTheClearOnlyWhenSSLModeAllowsIt(t *testing.T) {
 func TestTLSModeReadsSSLModeAfterAPasswordURLParseRefuses(t *testing.T) {
 	dbURL := "postgres://u:50%off@db:5432/app?sslmode=disable"
 	if _, err := pgserverless.ParseConnectionString(dbURL); err != nil {
-		t.Fatalf("run() accepts this DATABASE_URL, so tlsMode must read it: %v", err)
+		t.Fatalf("run() accepts this DATABASE_URL, so tlsFor must read it: %v", err)
 	}
-	if got := tlsMode(dbURL); got != pgserverless.TLSDisable {
+	if got := tlsFor(dbURL).mode; got != pgserverless.TLSDisable {
 		t.Errorf("got %q, want %q", got, pgserverless.TLSDisable)
 	}
-	if got := tlsMode("postgres://u:50%off@db:5432/app?sslmode=require#x"); got != pgserverless.TLSRequire {
+	if got := tlsFor("postgres://u:50%off@db:5432/app?sslmode=require#x").mode; got != pgserverless.TLSRequire {
 		t.Errorf("sslmode=require: got %q", got)
 	}
-	if got := tlsMode("postgres://u:50%off@db:5432/app#?sslmode=disable"); got != pgserverless.TLSRequire {
+	if got := tlsFor("postgres://u:50%off@db:5432/app#?sslmode=disable").mode; got != pgserverless.TLSRequire {
 		t.Errorf("sslmode=disable in the fragment: got %q", got)
 	}
 }
 
 func TestTLSModeIgnoresPassword(t *testing.T) {
-	if got := tlsMode("postgres://u:sslmode=disable@db:5432/app"); got != pgserverless.TLSRequire {
+	if got := tlsFor("postgres://u:sslmode=disable@db:5432/app").mode; got != pgserverless.TLSRequire {
 		t.Errorf("sslmode in password: got %q", got)
 	}
 }
@@ -76,7 +113,7 @@ func TestHTTPAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admit := httpAdmission(db, pgserverless.TLSDisable)
+	admit := httpAdmission(db, upstreamTLS{mode: pgserverless.TLSDisable})
 
 	t.Run("request credentials, DATABASE_URL host", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sql", nil)
@@ -117,7 +154,7 @@ func TestWSAdmissionCarriesNoCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v2", nil)
-	up, err := wsAdmission(db, pgserverless.TLSRequire)(req)
+	up, err := wsAdmission(db, upstreamTLS{mode: pgserverless.TLSRequire})(req)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,7 @@
 // PostgreSQL database over HTTP (POST /sql) and WebSocket (GET /v2).
 //
 // Configuration is environment variables. DATABASE_URL names the database
-// to serve (only its host, port and sslmode; clients bring their own
+// to serve (only its host, port, sslmode and sslrootcert; clients bring their own
 // credentials), and PGSERVERLESS_ADDR the listen address (default 127.0.0.1:4000).
 // A listener beyond loopback also needs PGSERVERLESS_ALLOW_REMOTE=true, because
 // this server has no authentication of its own. PGSERVERLESS_CORS_ORIGINS, a
@@ -55,7 +55,7 @@ func run() error {
 		return errors.New("DATABASE_URL is not a valid postgres:// connection string")
 	}
 
-	tls := tlsMode(dbURL)
+	tls := tlsFor(dbURL)
 	mux := http.NewServeMux()
 	mux.Handle("/", pgserverless.NewHTTPHandler(
 		httpAdmission(db, tls),
@@ -97,7 +97,7 @@ func run() error {
 // user named in the request's own connection string. DATABASE_URL's
 // credentials are never lent out: a request without the header is refused, so
 // a cross-site form post to a loopback listener cannot run SQL.
-func httpAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.HTTPAdmission {
+func httpAdmission(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.HTTPAdmission {
 	return func(r *http.Request) (pgserverless.Upstream, error) {
 		ci, err := pgserverless.ParseConnectionString(r.Header.Get("Connection-String"))
 		if err != nil {
@@ -110,35 +110,44 @@ func httpAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.HTTPAdmis
 }
 
 // wsAdmission only routes: on GET /v2 the client authenticates inside the tunnel.
-func wsAdmission(db *pgserverless.ConnInfo, tls string) pgserverless.HTTPAdmission {
+func wsAdmission(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.HTTPAdmission {
 	return func(*http.Request) (pgserverless.Upstream, error) {
 		return upstream(db, tls), nil
 	}
 }
 
-func upstream(db *pgserverless.ConnInfo, tls string) pgserverless.Upstream {
+func upstream(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.Upstream {
 	return pgserverless.Upstream{
-		Addr:       net.JoinHostPort(db.Host, db.Port),
-		ServerName: db.Host,
-		TLSMode:    tls,
+		Addr:               net.JoinHostPort(db.Host, db.Port),
+		ServerName:         db.Host,
+		TLSMode:            tls.mode,
+		InsecureSkipVerify: tls.skipVerify,
 	}
 }
 
-// tlsMode negotiates TLS with the database unless DATABASE_URL's sslmode is
-// disable, or allow or prefer, which fall back to the clear as libpq does
-// (allow is read as prefer, so TLS is tried first).
-func tlsMode(dbURL string) string {
+type upstreamTLS struct {
+	mode       string
+	skipVerify bool
+}
+
+// tlsFor reads DATABASE_URL's sslmode as libpq does: allow (read as prefer) and prefer fall back to the clear,
+// and below verify-ca the certificate is not checked unless sslrootcert is set. No sslmode verifies, stricter than libpq.
+func tlsFor(dbURL string) upstreamTLS {
 	// Not url.Parse: it refuses a password ParseConnectionString accepts (50%off), which dropped sslmode=disable.
 	beforeFragment, _, _ := strings.Cut(dbURL, "#")
 	_, query, _ := strings.Cut(beforeFragment, "?")
 	q, _ := url.ParseQuery(query)
+	// libpq verifies against sslrootcert; this server has only the system roots, so it verifies against those and fails closed.
+	unverified := q.Get("sslrootcert") == ""
 	switch q.Get("sslmode") {
 	case "disable":
-		return pgserverless.TLSDisable
+		return upstreamTLS{mode: pgserverless.TLSDisable}
 	case "allow", "prefer":
-		return pgserverless.TLSPrefer
+		return upstreamTLS{mode: pgserverless.TLSPrefer, skipVerify: unverified}
+	case "require":
+		return upstreamTLS{mode: pgserverless.TLSRequire, skipVerify: unverified}
 	}
-	return pgserverless.TLSRequire
+	return upstreamTLS{mode: pgserverless.TLSRequire}
 }
 
 func splitOrigins(s string) []string {
