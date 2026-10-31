@@ -313,11 +313,15 @@ func dialUpstreamRaw(ctx context.Context, up Upstream) (net.Conn, error) {
 	}
 
 	tlsConn, err := negotiateUpstreamTLS(dialCtx, conn, up, host)
-	if err != nil {
-		conn.Close()
+	if err == nil {
+		return tlsConn, nil
+	}
+	conn.Close()
+	if up.TLSMode != TLSPrefer || dialCtx.Err() != nil {
 		return nil, err
 	}
-	return tlsConn, nil
+	// As libpq's prefer does, a failed TLS attempt, refused or not, is retried in the clear on a new connection.
+	return d.DialContext(dialCtx, "tcp", addr)
 }
 
 // negotiateUpstreamTLS performs PostgreSQL's SSLRequest handshake and wraps the
@@ -345,7 +349,8 @@ func negotiateUpstreamTLS(ctx context.Context, conn net.Conn, up Upstream, host 
 	if answer[0] != 'S' {
 		// Refusing here rather than continuing in the clear is deliberate. The
 		// deployer asked for TLS to the upstream; silently downgrading would
-		// give them an unencrypted link that looks configured.
+		// give them an unencrypted link that looks configured. Only TLSPrefer
+		// falls back, and it does so on a new connection in dialUpstreamRaw.
 		return nil, errors.New("upstream refused TLS but upstream TLS is required")
 	}
 

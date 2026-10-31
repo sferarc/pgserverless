@@ -124,13 +124,19 @@ func upstream(db *pgserverless.ConnInfo, tls string) pgserverless.Upstream {
 	}
 }
 
-// tlsMode negotiates TLS with the database unless DATABASE_URL says sslmode=disable.
+// tlsMode negotiates TLS with the database unless DATABASE_URL's sslmode is
+// disable, or allow or prefer, which fall back to the clear as libpq does
+// (allow is read as prefer, so TLS is tried first).
 func tlsMode(dbURL string) string {
 	// Not url.Parse: it refuses a password ParseConnectionString accepts (50%off), which dropped sslmode=disable.
 	beforeFragment, _, _ := strings.Cut(dbURL, "#")
 	_, query, _ := strings.Cut(beforeFragment, "?")
-	if q, _ := url.ParseQuery(query); q.Get("sslmode") == "disable" {
+	q, _ := url.ParseQuery(query)
+	switch q.Get("sslmode") {
+	case "disable":
 		return pgserverless.TLSDisable
+	case "allow", "prefer":
+		return pgserverless.TLSPrefer
 	}
 	return pgserverless.TLSRequire
 }

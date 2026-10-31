@@ -66,6 +66,7 @@ type Upstream struct {
 	// "disable" exists because a database on a loopback address or inside a
 	// private network often does not serve TLS at all, and without this the
 	// dial fails with "server refused TLS connection" and no way to proceed.
+	// "prefer" is for an upstream that may or may not serve TLS.
 	TLSMode string
 	// RawTextSimpleProtocol keeps raw-text requests on the simple query
 	// protocol. It is for an upstream that can only rewrite or hold a statement
@@ -82,6 +83,8 @@ const (
 	TLSRequire = "require"
 	// TLSDisable connects in the clear.
 	TLSDisable = "disable"
+	// TLSPrefer negotiates TLS and, if that fails, dials again in the clear, as libpq's sslmode=prefer does.
+	TLSPrefer = "prefer"
 )
 
 // AdmissionError refuses a request with a specific HTTP status. An Admission
@@ -244,6 +247,10 @@ func upstreamConfig(up Upstream, mode pgx.QueryExecMode) (*pgx.ConnConfig, error
 			sni = host
 		}
 		cfg.TLSConfig = &tls.Config{ServerName: sni, InsecureSkipVerify: up.InsecureSkipVerify} //nolint:gosec // InsecureSkipVerify is the caller's explicit choice, see Upstream.
+	}
+	if up.TLSMode == TLSPrefer {
+		// pgx tries the fallback when the TLS attempt fails, as it does for sslmode=prefer.
+		cfg.Fallbacks = []*pgconn.FallbackConfig{{Host: host, Port: uint16(port)}}
 	}
 
 	if up.AppName != "" {
