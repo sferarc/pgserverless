@@ -1,12 +1,14 @@
 package pgserverless
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -422,7 +424,14 @@ func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 	dec := json.NewDecoder(r.Body)
 	// A float64 rounds an integer past 2^53, so a bigint id sent as a JSON number bound as a different id.
 	dec.UseNumber()
-	if err := dec.Decode(&body); err != nil {
+	err := dec.Decode(&body)
+	if err == nil {
+		// Neon's serde_json refuses anything but whitespace after the value; read leniently, a second value was silently dropped.
+		if _, terr := dec.Token(); !errors.Is(terr, io.EOF) {
+			err = cmp.Or(terr, ErrInvalidRequest)
+		}
+	}
+	if err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return nil, fmt.Errorf("%w (max is %d bytes)", ErrRequestTooLarge, MaxRequestBodyBytes)
 		}
