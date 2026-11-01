@@ -3,6 +3,7 @@ package pgserverless
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,6 +60,8 @@ type Upstream struct {
 	// Appropriate when dialing a loopback address whose certificate is
 	// self-signed, and not otherwise.
 	InsecureSkipVerify bool
+	// RootCAs, when set, verifies the upstream certificate against these roots instead of the system's, as libpq's sslrootcert does.
+	RootCAs *x509.CertPool
 	// TLSMode says whether to negotiate TLS with the upstream, using
 	// PostgreSQL's own vocabulary. Empty means "require", which keeps the
 	// behaviour every existing caller had.
@@ -246,7 +249,7 @@ func upstreamConfig(up Upstream, mode pgx.QueryExecMode) (*pgx.ConnConfig, error
 		if sni == "" {
 			sni = host
 		}
-		cfg.TLSConfig = &tls.Config{ServerName: sni, InsecureSkipVerify: up.InsecureSkipVerify} //nolint:gosec // InsecureSkipVerify is the caller's explicit choice, see Upstream.
+		cfg.TLSConfig = &tls.Config{ServerName: sni, RootCAs: up.RootCAs, InsecureSkipVerify: up.InsecureSkipVerify} //nolint:gosec // InsecureSkipVerify is the caller's explicit choice, see Upstream.
 	}
 	if up.TLSMode == TLSPrefer {
 		// pgx tries the fallback when the TLS attempt fails, as it does for sslmode=prefer.

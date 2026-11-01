@@ -1,12 +1,16 @@
 package main
 
 import (
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sferarc/pgserverless"
+	"github.com/sferarc/pgserverless/pgfake"
 )
 
 func TestIsLoopback(t *testing.T) {
@@ -83,6 +87,64 @@ func TestAdmissionsCarryTheCertificateCheck(t *testing.T) {
 		if up.TLSMode != pgserverless.TLSRequire || !up.InsecureSkipVerify {
 			t.Errorf("%s: got TLSMode %q InsecureSkipVerify %v, want require without the check", name, up.TLSMode, up.InsecureSkipVerify)
 		}
+	}
+}
+
+func TestLoadRootCAsReadsTheSSLRootCertFile(t *testing.T) {
+	dir := t.TempDir()
+	ca := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(ca, pgfake.New(t).CertificatePEM(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notPEM := filepath.Join(dir, "not.pem")
+	if err := os.WriteFile(notPEM, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	roots, err := loadRootCAs(tlsFor("postgres://u:p@db/app?sslmode=verify-full&sslrootcert=" + ca).rootCert)
+	if err != nil || roots == nil {
+		t.Fatalf("a PEM file: got %v, %v, want its roots", roots, err)
+	}
+	for _, rootCert := range []string{"", "system"} {
+		if roots, err := loadRootCAs(rootCert); roots != nil || err != nil {
+			t.Errorf("%q: got %v, %v, want the system roots", rootCert, roots, err)
+		}
+	}
+	for _, rootCert := range []string{filepath.Join(dir, "missing.pem"), notPEM} {
+		if _, err := loadRootCAs(rootCert); err == nil {
+			t.Errorf("%q: want an error", rootCert)
+		}
+	}
+	if got := tlsFor("postgres://u:p@db/app?sslmode=disable&sslrootcert=" + ca).rootCert; got != "" {
+		t.Errorf("sslmode=disable: rootCert = %q, want none read", got)
+	}
+}
+
+func TestAdmissionsCarryTheRootCAs(t *testing.T) {
+	db, err := pgserverless.ParseConnectionString("postgres://owner:secret@db.example.test:5433/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	tls := upstreamTLS{mode: pgserverless.TLSRequire, roots: roots}
+	req := httptest.NewRequest(http.MethodPost, "/sql", nil)
+	req.Header.Set("Connection-String", "postgres://reader:pw@db.example.test/app")
+	for name, admit := range map[string]pgserverless.HTTPAdmission{"http": httpAdmission(db, tls), "websocket": wsAdmission(db, tls)} {
+		up, err := admit(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if up.RootCAs != roots {
+			t.Errorf("%s: RootCAs not passed to the upstream", name)
+		}
+	}
+}
+
+func TestRunRefusesAnUnreadableSSLRootCert(t *testing.T) {
+	t.Setenv("PGSERVERLESS_ADDR", "127.0.0.1:0")
+	t.Setenv("DATABASE_URL", "postgres://u:p@db/app?sslmode=verify-full&sslrootcert="+filepath.Join(t.TempDir(), "missing.pem"))
+	if err := run(); err == nil || !strings.Contains(err.Error(), "sslrootcert") {
+		t.Errorf("run() = %v, want an sslrootcert error", err)
 	}
 }
 

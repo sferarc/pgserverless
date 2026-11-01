@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -56,6 +57,9 @@ func run() error {
 	}
 
 	tls := tlsFor(dbURL)
+	if tls.roots, err = loadRootCAs(tls.rootCert); err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/", pgserverless.NewHTTPHandler(
 		httpAdmission(db, tls),
@@ -122,12 +126,16 @@ func upstream(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.Upstream 
 		ServerName:         db.Host,
 		TLSMode:            tls.mode,
 		InsecureSkipVerify: tls.skipVerify,
+		RootCAs:            tls.roots,
 	}
 }
 
 type upstreamTLS struct {
 	mode       string
 	skipVerify bool
+	// rootCert is sslrootcert as written; run loads it into roots.
+	rootCert string
+	roots    *x509.CertPool
 }
 
 // tlsFor reads DATABASE_URL's sslmode as libpq does: allow (read as prefer) and prefer fall back to the clear,
@@ -137,17 +145,34 @@ func tlsFor(dbURL string) upstreamTLS {
 	beforeFragment, _, _ := strings.Cut(dbURL, "#")
 	_, query, _ := strings.Cut(beforeFragment, "?")
 	q, _ := url.ParseQuery(query)
-	// libpq verifies against sslrootcert; this server has only the system roots, so it verifies against those and fails closed.
-	unverified := q.Get("sslrootcert") == ""
+	rootCert := q.Get("sslrootcert")
+	unverified := rootCert == ""
 	switch q.Get("sslmode") {
 	case "disable":
 		return upstreamTLS{mode: pgserverless.TLSDisable}
 	case "allow", "prefer":
-		return upstreamTLS{mode: pgserverless.TLSPrefer, skipVerify: unverified}
+		return upstreamTLS{mode: pgserverless.TLSPrefer, skipVerify: unverified, rootCert: rootCert}
 	case "require":
-		return upstreamTLS{mode: pgserverless.TLSRequire, skipVerify: unverified}
+		return upstreamTLS{mode: pgserverless.TLSRequire, skipVerify: unverified, rootCert: rootCert}
 	}
-	return upstreamTLS{mode: pgserverless.TLSRequire}
+	return upstreamTLS{mode: pgserverless.TLSRequire, rootCert: rootCert}
+}
+
+// loadRootCAs reads sslrootcert as libpq does: a file of PEM certificates to trust, or "system" for the system roots.
+// A file that cannot be read stops the server, where libpq below verify-ca would skip the check.
+func loadRootCAs(rootCert string) (*x509.CertPool, error) {
+	if rootCert == "" || rootCert == "system" {
+		return nil, nil
+	}
+	pemCerts, err := os.ReadFile(rootCert)
+	if err != nil {
+		return nil, fmt.Errorf("DATABASE_URL sslrootcert: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pemCerts) {
+		return nil, fmt.Errorf("DATABASE_URL sslrootcert: %s holds no PEM certificate", rootCert)
+	}
+	return roots, nil
 }
 
 func splitOrigins(s string) []string {

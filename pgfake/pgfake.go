@@ -149,6 +149,11 @@ func (f *PG) SetDatabaseEncoding(enc string) {
 // addr returns the host:port the fake backend listens on.
 func (f *PG) Addr() string { return f.ln.Addr().String() }
 
+// CertificatePEM is the fake backend's self-signed TLS certificate, for a client that trusts it as its root.
+func (f *PG) CertificatePEM() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.tlsCfg.Certificates[0].Certificate[0]})
+}
+
 // setResult registers a canned result for an exact SQL string.
 func (f *PG) SetResult(sql string, r Result) {
 	f.mu.Lock()

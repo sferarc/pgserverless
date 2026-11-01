@@ -55,8 +55,8 @@ var upstreamUnavailable, _ = (&pgproto3.ErrorResponse{
 // request, and the credentials arrive inside the tunnel in the client's own
 // StartupMessage, which this server forwards rather than reads.
 //
-// So on this path only Addr, ServerName and InsecureSkipVerify of the returned
-// Upstream are consulted. User, Password and Database are ignored, because
+// So on this path only the address and TLS fields of the returned Upstream
+// are consulted. User, Password and Database are ignored, because
 // substituting them would mean authenticating as somebody the client did not
 // ask to be.
 //
@@ -360,6 +360,7 @@ func negotiateUpstreamTLS(ctx context.Context, conn net.Conn, up Upstream, host 
 	}
 	tlsConn := tls.Client(conn, &tls.Config{
 		ServerName:         sni,
+		RootCAs:            up.RootCAs,
 		InsecureSkipVerify: up.InsecureSkipVerify, //nolint:gosec // the caller's explicit choice, see Upstream.
 	})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
