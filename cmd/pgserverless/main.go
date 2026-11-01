@@ -4,14 +4,17 @@
 // Configuration is environment variables. DATABASE_URL names the database
 // to serve (only its host, port, sslmode and sslrootcert; clients bring their own
 // credentials), and PGSERVERLESS_ADDR the listen address (default 127.0.0.1:4000).
-// A listener beyond loopback also needs PGSERVERLESS_ALLOW_REMOTE=true, because
-// this server has no authentication of its own. PGSERVERLESS_CORS_ORIGINS, a
+// PGSERVERLESS_AUTH_TOKEN, when set, must arrive as Authorization: Bearer on
+// POST /sql and GET /v2. A listener beyond loopback needs that token or
+// PGSERVERLESS_ALLOW_REMOTE=true, which says the network already restricts
+// who reaches it. PGSERVERLESS_CORS_ORIGINS, a
 // comma separated list or "*", lets browser pages on those origins call
 // POST /sql; unset, no cross-origin page can read a response.
 package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -42,8 +45,9 @@ func run() error {
 	if addr == "" {
 		addr = defaultAddr
 	}
-	if !isLoopback(addr) && os.Getenv("PGSERVERLESS_ALLOW_REMOTE") != "true" {
-		return fmt.Errorf("refusing to listen on %s: set PGSERVERLESS_ALLOW_REMOTE=true if the network already restricts access", addr)
+	token := os.Getenv("PGSERVERLESS_AUTH_TOKEN")
+	if !isLoopback(addr) && token == "" && os.Getenv("PGSERVERLESS_ALLOW_REMOTE") != "true" {
+		return fmt.Errorf("refusing to listen on %s with no authentication: set PGSERVERLESS_AUTH_TOKEN, or PGSERVERLESS_ALLOW_REMOTE=true if the network already restricts access", addr)
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
@@ -60,18 +64,11 @@ func run() error {
 	if tls.roots, err = loadRootCAs(tls.rootCert); err != nil {
 		return err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/", pgserverless.NewHTTPHandler(
-		httpAdmission(db, tls),
-		pgserverless.WithHTTPWebSocketAdmission(wsAdmission(db, tls)),
-		pgserverless.WithHTTPMaxResponseBytes(pgserverless.MaxResponseBytes),
-		pgserverless.WithHTTPCORSOrigins(splitOrigins(os.Getenv("PGSERVERLESS_CORS_ORIGINS"))...),
-	))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
-	})
-
+	mux := newMux(
+		requireToken(token, httpAdmission(db, tls)),
+		requireToken(token, wsAdmission(db, tls)),
+		splitOrigins(os.Getenv("PGSERVERLESS_CORS_ORIGINS")),
+	)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -79,7 +76,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("pgserverless: listening", "addr", addr, "upstream", net.JoinHostPort(db.Host, db.Port))
+		slog.Info("pgserverless: listening", "addr", addr, "upstream", net.JoinHostPort(db.Host, db.Port), "auth", token != "")
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -111,6 +108,43 @@ func httpAdmission(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.HTTP
 		up.User, up.Password, up.Database = ci.User, ci.Password, ci.Database
 		return up, nil
 	}
+}
+
+func newMux(admitHTTP, admitWS pgserverless.HTTPAdmission, origins []string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/", pgserverless.NewHTTPHandler(
+		admitHTTP,
+		pgserverless.WithHTTPWebSocketAdmission(admitWS),
+		pgserverless.WithHTTPMaxResponseBytes(pgserverless.MaxResponseBytes),
+		pgserverless.WithHTTPCORSOrigins(origins...),
+	))
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
+	})
+	return mux
+}
+
+// requireToken refuses a request whose Authorization header is not Bearer token before admit runs; an empty token admits every request.
+func requireToken(token string, admit pgserverless.HTTPAdmission) pgserverless.HTTPAdmission {
+	if token == "" {
+		return admit
+	}
+	return func(r *http.Request) (pgserverless.Upstream, error) {
+		if !bearerMatches(r.Header.Get("Authorization"), token) {
+			return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusUnauthorized, Message: "unauthorized"}
+		}
+		return admit(r)
+	}
+}
+
+// bearerMatches reads the scheme case-insensitively (RFC 7235 section 2.1) and compares the credential in constant time.
+func bearerMatches(header, token string) bool {
+	i := strings.IndexAny(header, " \t")
+	if i < 0 || !strings.EqualFold(header[:i], "Bearer") {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.Trim(header[i:], " \t")), []byte(token)) == 1
 }
 
 // wsAdmission only routes: on GET /v2 the client authenticates inside the tunnel.

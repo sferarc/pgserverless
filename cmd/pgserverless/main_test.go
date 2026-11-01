@@ -257,6 +257,7 @@ func TestRunRedactsDatabaseURL(t *testing.T) {
 func TestRunRefusesRemoteListener(t *testing.T) {
 	t.Setenv("PGSERVERLESS_ADDR", "0.0.0.0:0")
 	t.Setenv("PGSERVERLESS_ALLOW_REMOTE", "")
+	t.Setenv("PGSERVERLESS_AUTH_TOKEN", "")
 	t.Setenv("DATABASE_URL", "postgres://u:p@db/app")
 	if err := run(); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Errorf("run() = %v, want a refusal", err)
@@ -270,5 +271,107 @@ func TestSplitOrigins(t *testing.T) {
 	}
 	if got := splitOrigins(""); got != nil {
 		t.Errorf("empty: got %q, want nil so CORS stays off", got)
+	}
+}
+
+func TestBearerMatches(t *testing.T) {
+	for header, want := range map[string]bool{
+		"Bearer s3cret":    true,
+		"bearer s3cret":    true,
+		"BEARER\ts3cret ":  true,
+		"Bearer   s3cret":  true,
+		"Bearer s3cre":     false,
+		"Bearer s3cretx":   false,
+		"Bearer":           false,
+		"Bearer ":          false,
+		"Bearers3cret":     false,
+		"Basic s3cret":     false,
+		"":                 false,
+		"Bearer s3 cret":   false,
+		" Bearer s3cret":   false,
+		"Bearer s3cret\tx": false,
+	} {
+		if got := bearerMatches(header, "s3cret"); got != want {
+			t.Errorf("bearerMatches(%q) = %v, want %v", header, got, want)
+		}
+	}
+}
+
+func TestAuthTokenGuardsBothTransports(t *testing.T) {
+	var reached []string
+	inner := func(r *http.Request) (pgserverless.Upstream, error) {
+		reached = append(reached, r.URL.Path)
+		// A status no other path answers, so the test sees the token check passed without dialing a database.
+		return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusTeapot, Message: "admitted"}
+	}
+	srv := httptest.NewServer(newMux(requireToken("s3cret", inner), requireToken("s3cret", inner), []string{"*"}))
+	defer srv.Close()
+
+	do := func(method, path, auth string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, srv.URL+path, strings.NewReader(`{"query":"SELECT 1","params":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Connection-String", "postgres://u:p@db/app")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	for _, path := range []string{"/sql", "/v2"} {
+		method := http.MethodPost
+		if path == "/v2" {
+			method = http.MethodGet
+		}
+		for auth, want := range map[string]int{
+			"":              http.StatusUnauthorized,
+			"Bearer wrong":  http.StatusUnauthorized,
+			"Basic s3cret":  http.StatusUnauthorized,
+			"Bearer s3cret": http.StatusTeapot,
+		} {
+			if got := do(method, path, auth); got != want {
+				t.Errorf("%s %s with %q: status %d, want %d", method, path, auth, got, want)
+			}
+		}
+	}
+	if strings.Join(reached, ",") != "/sql,/v2" {
+		t.Errorf("admission reached for %q, want only the two requests with the token", reached)
+	}
+
+	// A browser preflight carries no Authorization, so it must not need the token.
+	if got := do(http.MethodOptions, "/sql", ""); got != http.StatusOK {
+		t.Errorf("OPTIONS /sql: status %d, want 200", got)
+	}
+	if got := do(http.MethodGet, "/health", ""); got != http.StatusOK {
+		t.Errorf("GET /health: status %d, want 200", got)
+	}
+}
+
+func TestNoAuthTokenAdmitsWithoutAuthorization(t *testing.T) {
+	called := false
+	admit := requireToken("", func(*http.Request) (pgserverless.Upstream, error) {
+		called = true
+		return pgserverless.Upstream{}, nil
+	})
+	if _, err := admit(httptest.NewRequest(http.MethodPost, "/sql", nil)); err != nil || !called {
+		t.Errorf("got %v, called %v, want the inner admission to run", err, called)
+	}
+}
+
+func TestRunAcceptsRemoteListenerWithAuthToken(t *testing.T) {
+	t.Setenv("PGSERVERLESS_ADDR", "0.0.0.0:0")
+	t.Setenv("PGSERVERLESS_ALLOW_REMOTE", "")
+	t.Setenv("PGSERVERLESS_AUTH_TOKEN", "s3cret")
+	// An invalid DATABASE_URL stops run right after the listener check, so nothing binds.
+	t.Setenv("DATABASE_URL", "postgres://u:p@db:bad/app")
+	if err := run(); err == nil || strings.Contains(err.Error(), "refusing") {
+		t.Errorf("run() = %v, want the DATABASE_URL error, not a refusal", err)
 	}
 }
