@@ -2758,6 +2758,425 @@
           "has_fields": ["code", "severity"]
         }
       }
+    },
+    {
+      "id": "batch/results-in-statement-order",
+      "level": 3,
+      "spec": "8",
+      "note": "One result object per statement, in the order sent. The three statements share a column name, so only the order tells them apart.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT 'one' AS v"
+            },
+            {
+              "query": "SELECT 'two' AS v"
+            },
+            {
+              "query": "SELECT 'three' AS v"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "command": "SELECT",
+            "row_count": 1,
+            "rows": [
+              {
+                "v": {
+                  "json": "\"one\""
+                }
+              }
+            ]
+          },
+          {
+            "command": "SELECT",
+            "row_count": 1,
+            "rows": [
+              {
+                "v": {
+                  "json": "\"two\""
+                }
+              }
+            ]
+          },
+          {
+            "command": "SELECT",
+            "row_count": 1,
+            "rows": [
+              {
+                "v": {
+                  "json": "\"three\""
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/later-statement-sees-an-earlier-one",
+      "level": 3,
+      "spec": "8",
+      "note": "The statements run one after another in one transaction, so the INSERT finds the table the first statement created. A server that prepares every statement before running any fails the INSERT with 42P01. ON COMMIT DROP leaves nothing behind on a pooled upstream.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "CREATE TEMP TABLE cf_batch_seq (n int4) ON COMMIT DROP"
+            },
+            {
+              "query": "INSERT INTO cf_batch_seq (n) VALUES (7)"
+            },
+            {
+              "query": "SELECT n FROM cf_batch_seq"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {},
+          {
+            "command": "INSERT",
+            "row_count": 1
+          },
+          {
+            "command": "SELECT",
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"7\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/serializable-is-applied",
+      "level": 3,
+      "spec": "8",
+      "note": "PostgreSQL reports the level it applied, so a server that accepts the header and drops it fails here rather than passing a shape check.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_isolation_level": "Serializable"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SHOW transaction_isolation"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"serializable\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/repeatable-read-is-applied",
+      "level": 3,
+      "spec": "8",
+      "note": "Each camelCase level maps to its own SQL spelling. A server that maps every level to one of them passes the Serializable case and fails this one.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_isolation_level": "RepeatableRead"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SHOW transaction_isolation"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"repeatable read\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/read-uncommitted-is-applied",
+      "level": 3,
+      "spec": "8",
+      "note": "PostgreSQL runs READ UNCOMMITTED as READ COMMITTED but still reports the level it was asked for.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_isolation_level": "ReadUncommitted"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SHOW transaction_isolation"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"read uncommitted\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/read-only-is-applied",
+      "level": 3,
+      "spec": "8",
+      "note": "The read-only counterpart of batch/read-only-rejects-a-write, observed through the setting rather than a failed write.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_read_only": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SHOW transaction_read_only"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"on\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/read-only-accepts-1",
+      "level": 3,
+      "spec": "8",
+      "note": "A standard boolean parser accepts 1. Reading it as false would turn a read-only request into a read-write one.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_read_only": "1"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SHOW transaction_read_only"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"on\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/read-only-accepts-capitalised-true",
+      "level": 3,
+      "spec": "8",
+      "note": "A standard boolean parser accepts True. Reading it as false would turn a read-only request into a read-write one.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_read_only": "True"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SHOW transaction_read_only"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"on\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/deferrable-is-applied",
+      "level": 3,
+      "spec": "8",
+      "note": "DEFERRABLE only takes effect for SERIALIZABLE READ ONLY, so the case asks for all three.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_isolation_level": "Serializable",
+          "batch_read_only": true,
+          "batch_deferrable": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SHOW transaction_deferrable"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "row_as_array": true,
+            "rows": [
+              [
+                {
+                  "json": "\"on\""
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch/unknown-isolation-level-is-refused",
+      "level": 3,
+      "spec": "8",
+      "note": "The caller asked for a guarantee the server does not recognise. Running the batch at the default level instead is the wrong answer.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_isolation_level": "Snapshot"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT 1"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {}
+      }
+    },
+    {
+      "id": "batch/failing-statement-returns-its-error",
+      "level": 3,
+      "spec": "8",
+      "note": "A failed batch answers with the error of the statement that failed, not with results for the statements before it.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT 1"
+            },
+            {
+              "query": "SELECT 1/0"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "code": "22012",
+          "has_fields": ["code", "severity"]
+        }
+      }
     }
   ]
 }

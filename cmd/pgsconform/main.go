@@ -176,6 +176,7 @@ type expectation struct {
 	RowAsArray  *bool            `json:"row_as_array"`
 	Fields      []expectedField  `json:"fields"`
 	Rows        json.RawMessage  `json:"rows"`
+	Results     []expectation    `json:"results"`
 	Error       *expectedError   `json:"error"`
 	WebSocket   *expectedWSocket `json:"websocket"`
 }
@@ -463,6 +464,29 @@ func checkResult(exp expectation, got map[string]json.RawMessage, loose bool) st
 	if len(exp.Rows) > 0 {
 		if p := checkRows(exp.Rows, got["rows"], loose); p != "" {
 			return p
+		}
+	}
+	if exp.Results != nil {
+		if p := checkResults(exp.Results, got["results"], loose); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// checkResults checks a batch response: one result object per statement, in
+// the order the statements were sent (SPEC.md section 8).
+func checkResults(exp []expectation, raw json.RawMessage, loose bool) string {
+	var got []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &got); err != nil || got == nil {
+		return fmt.Sprintf("results: want an array of %d result objects, got %q", len(exp), raw)
+	}
+	if len(got) != len(exp) {
+		return fmt.Sprintf("results: want %d, got %d", len(exp), len(got))
+	}
+	for i := range exp {
+		if p := checkResult(exp[i], got[i], loose); p != "" {
+			return fmt.Sprintf("results[%d]: %s", i, p)
 		}
 	}
 	return ""

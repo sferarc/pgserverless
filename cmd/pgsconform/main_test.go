@@ -106,3 +106,32 @@ func TestPublishedCorpusMatchesSpecVersion(t *testing.T) {
 		t.Fatalf("SPEC.md is version %s but cases/v1.json declares spec_version %s", got, c.SpecVersion)
 	}
 }
+
+func TestCheckResults(t *testing.T) {
+	var exp expectation
+	if err := json.Unmarshal([]byte(`{"status":200,"results":[{"rows":[{"v":{"json":"\"one\""}}]},{"command":"SELECT","rows":[{"v":{"json":"\"two\""}}]}]}`), &exp); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"in order", `{"results":[{"rows":[{"v":"one"}]},{"command":"SELECT","rows":[{"v":"two"}]}]}`, true},
+		{"swapped", `{"results":[{"rows":[{"v":"two"}]},{"command":"SELECT","rows":[{"v":"one"}]}]}`, false},
+		{"one short", `{"results":[{"rows":[{"v":"one"}]}]}`, false},
+		{"single result instead", `{"command":"SELECT","rows":[{"v":"one"}]}`, false},
+		{"null", `{"results":null}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tt.body), &got); err != nil {
+				t.Fatal(err)
+			}
+			if msg := checkResult(exp, got, false); (msg == "") != tt.ok {
+				t.Fatalf("checkResult(%s) = %q, want ok=%v", tt.body, msg, tt.ok)
+			}
+		})
+	}
+}

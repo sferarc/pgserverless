@@ -105,12 +105,7 @@
             "array_mode": { "type": "boolean" },
             "batch_isolation_level": {
               "type": "string",
-              "enum": [
-                "ReadUncommitted",
-                "ReadCommitted",
-                "RepeatableRead",
-                "Serializable"
-              ]
+              "description": "The client sends ReadUncommitted, ReadCommitted, RepeatableRead or Serializable. Any other value checks that a server refuses it."
             },
             "batch_read_only": { "type": ["boolean", "string"] },
             "batch_deferrable": { "type": ["boolean", "string"] },
@@ -182,8 +177,20 @@
         },
         "results": {
           "type": "array",
-          "description": "For a batch: one entry per statement, each shaped like a single-statement expect.",
-          "items": { "$ref": "#/$defs/expect" }
+          "description": "For a batch: one entry per statement, in the order sent, each checked like a single-statement result. An empty object only requires the result to be there.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "command": { "$ref": "#/$defs/expect/properties/command" },
+              "row_count": { "$ref": "#/$defs/expect/properties/row_count" },
+              "row_as_array": {
+                "$ref": "#/$defs/expect/properties/row_as_array"
+              },
+              "fields": { "$ref": "#/$defs/expect/properties/fields" },
+              "rows": { "$ref": "#/$defs/expect/properties/rows" }
+            }
+          }
         },
         "error": {
           "type": "object",
