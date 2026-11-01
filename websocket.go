@@ -354,15 +354,7 @@ func negotiateUpstreamTLS(ctx context.Context, conn net.Conn, up Upstream, host 
 		return nil, errors.New("upstream refused TLS but upstream TLS is required")
 	}
 
-	sni := up.ServerName
-	if sni == "" {
-		sni = host
-	}
-	tlsConn := tls.Client(conn, &tls.Config{
-		ServerName:         sni,
-		RootCAs:            up.RootCAs,
-		InsecureSkipVerify: up.InsecureSkipVerify, //nolint:gosec // the caller's explicit choice, see Upstream.
-	})
+	tlsConn := tls.Client(conn, upstreamTLSConfig(up, host))
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("upstream tls handshake: %w", err)
 	}

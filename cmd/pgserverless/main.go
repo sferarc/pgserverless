@@ -126,6 +126,7 @@ func upstream(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.Upstream 
 		ServerName:         db.Host,
 		TLSMode:            tls.mode,
 		InsecureSkipVerify: tls.skipVerify,
+		VerifyCAOnly:       tls.caOnly,
 		RootCAs:            tls.roots,
 	}
 }
@@ -133,13 +134,16 @@ func upstream(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.Upstream 
 type upstreamTLS struct {
 	mode       string
 	skipVerify bool
+	// caOnly checks the certificate's issuer but not its host name.
+	caOnly bool
 	// rootCert is sslrootcert as written; run loads it into roots.
 	rootCert string
 	roots    *x509.CertPool
 }
 
 // tlsFor reads DATABASE_URL's sslmode as libpq does: allow (read as prefer) and prefer fall back to the clear,
-// and below verify-ca the certificate is not checked unless sslrootcert is set. No sslmode verifies, stricter than libpq.
+// below verify-ca the certificate is not checked unless sslrootcert is set, and with an sslrootcert file only verify-full checks the host name.
+// No sslmode, verify-ca without sslrootcert (libpq fails without root.crt) and sslrootcert=system (libpq refuses it below verify-full) verify fully.
 func tlsFor(dbURL string) upstreamTLS {
 	// Not url.Parse: it refuses a password ParseConnectionString accepts (50%off), which dropped sslmode=disable.
 	beforeFragment, _, _ := strings.Cut(dbURL, "#")
@@ -147,13 +151,17 @@ func tlsFor(dbURL string) upstreamTLS {
 	q, _ := url.ParseQuery(query)
 	rootCert := q.Get("sslrootcert")
 	unverified := rootCert == ""
+	// The name check is skipped only against a root file: without one, any publicly issued certificate would pass.
+	caOnly := rootCert != "" && rootCert != "system"
 	switch q.Get("sslmode") {
 	case "disable":
 		return upstreamTLS{mode: pgserverless.TLSDisable}
 	case "allow", "prefer":
-		return upstreamTLS{mode: pgserverless.TLSPrefer, skipVerify: unverified, rootCert: rootCert}
+		return upstreamTLS{mode: pgserverless.TLSPrefer, skipVerify: unverified, caOnly: caOnly, rootCert: rootCert}
 	case "require":
-		return upstreamTLS{mode: pgserverless.TLSRequire, skipVerify: unverified, rootCert: rootCert}
+		return upstreamTLS{mode: pgserverless.TLSRequire, skipVerify: unverified, caOnly: caOnly, rootCert: rootCert}
+	case "verify-ca":
+		return upstreamTLS{mode: pgserverless.TLSRequire, caOnly: caOnly, rootCert: rootCert}
 	}
 	return upstreamTLS{mode: pgserverless.TLSRequire, rootCert: rootCert}
 }

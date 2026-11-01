@@ -62,6 +62,9 @@ type Upstream struct {
 	InsecureSkipVerify bool
 	// RootCAs, when set, verifies the upstream certificate against these roots instead of the system's, as libpq's sslrootcert does.
 	RootCAs *x509.CertPool
+	// VerifyCAOnly, with RootCAs set, checks that one of them issued the upstream certificate but not that it names the host, as libpq's sslmode=verify-ca does.
+	// Without RootCAs the host name is still checked, since any publicly issued certificate would otherwise pass.
+	VerifyCAOnly bool
 	// TLSMode says whether to negotiate TLS with the upstream, using
 	// PostgreSQL's own vocabulary. Empty means "require", which keeps the
 	// behaviour every existing caller had.
@@ -245,11 +248,7 @@ func upstreamConfig(up Upstream, mode pgx.QueryExecMode) (*pgx.ConnConfig, error
 		// pgx reads a nil TLSConfig as "do not attempt TLS".
 		cfg.TLSConfig = nil
 	} else {
-		sni := up.ServerName
-		if sni == "" {
-			sni = host
-		}
-		cfg.TLSConfig = &tls.Config{ServerName: sni, RootCAs: up.RootCAs, InsecureSkipVerify: up.InsecureSkipVerify} //nolint:gosec // InsecureSkipVerify is the caller's explicit choice, see Upstream.
+		cfg.TLSConfig = upstreamTLSConfig(up, host)
 	}
 	if up.TLSMode == TLSPrefer {
 		// pgx tries the fallback when the TLS attempt fails, as it does for sslmode=prefer.
@@ -267,6 +266,34 @@ func upstreamConfig(up Upstream, mode pgx.QueryExecMode) (*pgx.ConnConfig, error
 		return &pgconn.CancelRequestContextWatcherHandler{Conn: c, DeadlineDelay: cancelGrace}
 	}
 	return cfg, nil
+}
+
+// upstreamTLSConfig is the TLS client configuration both transports dial the upstream with.
+func upstreamTLSConfig(up Upstream, host string) *tls.Config {
+	sni := up.ServerName
+	if sni == "" {
+		sni = host
+	}
+	cfg := &tls.Config{ServerName: sni, RootCAs: up.RootCAs, InsecureSkipVerify: up.InsecureSkipVerify} //nolint:gosec // InsecureSkipVerify is the caller's explicit choice, see Upstream.
+	if up.VerifyCAOnly && up.RootCAs != nil && !up.InsecureSkipVerify {
+		// crypto/tls checks the chain and the name together, so the chain alone is checked in VerifyConnection.
+		cfg.InsecureSkipVerify = true
+		cfg.VerifyConnection = func(cs tls.ConnectionState) error { return verifyIssuer(cs, up.RootCAs) }
+	}
+	return cfg
+}
+
+// verifyIssuer checks the peer's certificate chain against roots without checking any name.
+func verifyIssuer(cs tls.ConnectionState, roots *x509.CertPool) error {
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("upstream sent no certificate")
+	}
+	opts := x509.VerifyOptions{Roots: roots, Intermediates: x509.NewCertPool()}
+	for _, cert := range cs.PeerCertificates[1:] {
+		opts.Intermediates.AddCert(cert)
+	}
+	_, err := cs.PeerCertificates[0].Verify(opts)
+	return err
 }
 
 // Query handles one serverless HTTP SQL request: single statement or batch,

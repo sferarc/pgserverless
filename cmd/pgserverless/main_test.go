@@ -71,6 +71,25 @@ func TestTLSForChecksTheCertificateFromVerifyCAOrWithARootCert(t *testing.T) {
 	}
 }
 
+func TestTLSForChecksTheHostNameOnlyFromVerifyFull(t *testing.T) {
+	for query, want := range map[string]bool{
+		"":                                        false,
+		"?sslmode=require":                        false,
+		"?sslmode=verify-ca":                      false,
+		"?sslmode=verify-full":                    false,
+		"?sslmode=require&sslrootcert=ca.pem":     true,
+		"?sslmode=prefer&sslrootcert=ca.pem":      true,
+		"?sslmode=verify-ca&sslrootcert=ca.pem":   true,
+		"?sslmode=verify-full&sslrootcert=ca.pem": false,
+		"?sslmode=verify-ca&sslrootcert=system":   false,
+		"?sslmode=require&sslrootcert=system":     false,
+	} {
+		if got := tlsFor("postgres://u:p@db:5432/app" + query).caOnly; got != want {
+			t.Errorf("%q: caOnly = %v, want %v", query, got, want)
+		}
+	}
+}
+
 func TestAdmissionsCarryTheCertificateCheck(t *testing.T) {
 	db, err := pgserverless.ParseConnectionString("postgres://owner:secret@db.example.test:5433/app")
 	if err != nil {
@@ -126,7 +145,7 @@ func TestAdmissionsCarryTheRootCAs(t *testing.T) {
 		t.Fatal(err)
 	}
 	roots := x509.NewCertPool()
-	tls := upstreamTLS{mode: pgserverless.TLSRequire, roots: roots}
+	tls := upstreamTLS{mode: pgserverless.TLSRequire, roots: roots, caOnly: true}
 	req := httptest.NewRequest(http.MethodPost, "/sql", nil)
 	req.Header.Set("Connection-String", "postgres://reader:pw@db.example.test/app")
 	for name, admit := range map[string]pgserverless.HTTPAdmission{"http": httpAdmission(db, tls), "websocket": wsAdmission(db, tls)} {
@@ -134,8 +153,8 @@ func TestAdmissionsCarryTheRootCAs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if up.RootCAs != roots {
-			t.Errorf("%s: RootCAs not passed to the upstream", name)
+		if up.RootCAs != roots || !up.VerifyCAOnly {
+			t.Errorf("%s: RootCAs or VerifyCAOnly not passed to the upstream", name)
 		}
 	}
 }
