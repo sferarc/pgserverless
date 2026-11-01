@@ -19,6 +19,8 @@ func TestStatementErrorIs400WithItsSQLSTATEWhateverTheClass(t *testing.T) {
 		"57P01": "terminating connection due to administrator command",
 		"28000": "permission denied to set session authorization",
 		"08006": "connection failure",
+		// What PostgreSQL raises for a NUL byte in a text parameter; the driver conformance suite expects it (#3248).
+		"22021": `invalid byte sequence for encoding "UTF8": 0x00`,
 	}
 	shapes := map[string]struct {
 		body    string
