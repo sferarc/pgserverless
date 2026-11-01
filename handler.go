@@ -408,24 +408,42 @@ func writeAdmissionError(w http.ResponseWriter, err error) {
 // serveSQL keeps one function per decision: this one decides whether the
 // request is well formed, serveSQL decides what to do with a well formed one.
 func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
-	var req SQLRequest
+	// Each item's query is decoded as a pointer, so an item without one is told apart from an empty one.
+	var body struct {
+		SQLRequest
+		Queries []struct {
+			QueryItem
+			Query *string `json:"query"`
+		} `json:"queries"`
+	}
 	dec := json.NewDecoder(r.Body)
 	// A float64 rounds an integer past 2^53, so a bigint id sent as a JSON number bound as a different id.
 	dec.UseNumber()
-	if err := dec.Decode(&req); err != nil {
+	if err := dec.Decode(&body); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return nil, fmt.Errorf("%w (max is %d bytes)", ErrRequestTooLarge, MaxRequestBodyBytes)
 		}
 		return nil, ErrInvalidRequest
 	}
+	req := body.SQLRequest
 
-	isBatch := req.Queries != nil
+	isBatch := body.Queries != nil
 	// An empty query is valid: Neon answers it 200 with no fields and no command.
 	if !isBatch && req.Query == nil {
 		return nil, ErrMissingQuery
 	}
-	if isBatch && len(req.Queries) > MaxBatchQueries {
+	if isBatch && len(body.Queries) > MaxBatchQueries {
 		return nil, fmt.Errorf("batch too large: max %d queries", MaxBatchQueries)
+	}
+	if isBatch {
+		req.Queries = make([]QueryItem, len(body.Queries))
+		for i, item := range body.Queries {
+			// Neon refuses such a body with 400; read as "", the item ran as an empty statement and the batch answered 200.
+			if item.Query == nil {
+				return nil, fmt.Errorf("%w in queries[%d]", ErrMissingQuery, i)
+			}
+			req.Queries[i] = QueryItem{Query: *item.Query, Params: item.Params, ArrayMode: item.ArrayMode}
+		}
 	}
 	return &req, nil
 }

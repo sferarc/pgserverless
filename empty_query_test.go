@@ -66,6 +66,29 @@ func TestConformance_NullQueryStillRejected(t *testing.T) {
 	assert.Equal(t, ErrMissingQuery.Error(), decodeError(t, rec).Message)
 }
 
+// An item without a query is refused like a single request without one, as
+// Neon refuses the body; it is not an empty statement.
+func TestConformance_BatchItemWithoutQueryRejected(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"missing", `{"queries":[{"query":"SELECT 2 AS n"},{"params":[]}]}`},
+		{"null", `{"queries":[{"query":"SELECT 2 AS n"},{"query":null}]}`},
+		{"misspelled", `{"queries":[{"query":"SELECT 2 AS n"},{"sql":"SELECT 2 AS n"}]}`},
+	} {
+		for _, headers := range []map[string]string{nil, driverHeaders} {
+			t.Run(tc.name, func(t *testing.T) {
+				pg := pgfake.New(t)
+				pg.SetResult("SELECT 2 AS n", oneInt(2))
+				e := newConformanceServer(t, pg)
+
+				rec := doSQL(e, tc.body, headers)
+
+				require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+				assert.Equal(t, "query is required in queries[1]", decodeError(t, rec).Message)
+			})
+		}
+	}
+}
+
 // An empty item keeps its place in every batch path, so the items after it
 // still get their own results.
 func TestConformance_EmptyQueryInBatch(t *testing.T) {
