@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -193,8 +194,10 @@ type expectedError struct {
 }
 
 type expectedWSocket struct {
-	Upgraded    bool   `json:"upgraded"`
-	Subprotocol string `json:"subprotocol"`
+	Upgraded              bool   `json:"upgraded"`
+	Subprotocol           string `json:"subprotocol"`
+	SSLRequestDeclined    bool   `json:"ssl_request_declined"`
+	GSSEncRequestDeclined bool   `json:"gssenc_request_declined"`
 }
 
 var specVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
@@ -310,8 +313,9 @@ func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation) (outcome,
 	return outcomePass, ""
 }
 
-// runWebSocket covers level 4, which is the upgrade only. Once the connection
-// carries PostgreSQL frames, testing them would be testing PostgreSQL.
+// runWebSocket covers level 4: the upgrade and the server's own answers before
+// the startup. Past the startup the frames are relayed, so testing them would be
+// testing PostgreSQL.
 func (r *runner) runWebSocket(ctx context.Context, c kase, exp expectation) (outcome, string) {
 	url := strings.Replace(r.server, "http", "ws", 1) + c.Request.Path
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -346,7 +350,51 @@ func (r *runner) runWebSocket(ctx context.Context, c kase, exp expectation) (out
 			return outcomeFail, fmt.Sprintf("subprotocol: want %q, got %q", exp.WebSocket.Subprotocol, got)
 		}
 	}
+	if exp.WebSocket == nil {
+		return outcomePass, ""
+	}
+	// libpq sends GSSENCRequest before SSLRequest, so a case asking for both checks that the second one is declined too.
+	if exp.WebSocket.GSSEncRequestDeclined {
+		if p := checkEncryptionDeclined(ctx, conn, "GSSENCRequest", gssEncRequestCode); p != "" {
+			return outcomeFail, p
+		}
+	}
+	if exp.WebSocket.SSLRequestDeclined {
+		if p := checkEncryptionDeclined(ctx, conn, "SSLRequest", sslRequestCode); p != "" {
+			return outcomeFail, p
+		}
+	}
 	return outcomePass, ""
+}
+
+// The request codes PostgreSQL reserves for SSLRequest and GSSENCRequest.
+const (
+	sslRequestCode    = 80877103
+	gssEncRequestCode = 80877104
+)
+
+// checkEncryptionDeclined sends one encryption request in a binary frame and
+// expects the single byte N back, which is how a server says it will not
+// encrypt.
+func checkEncryptionDeclined(ctx context.Context, conn *websocket.Conn, name string, code uint32) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 8), code)
+	if err := conn.Write(ctx, websocket.MessageBinary, req); err != nil {
+		return fmt.Sprintf("send %s: %v", name, err)
+	}
+	typ, data, err := conn.Read(ctx)
+	if err != nil {
+		return fmt.Sprintf("%s: want the byte N, got %v", name, err)
+	}
+	if typ != websocket.MessageBinary {
+		return fmt.Sprintf("%s: answer came in a %v frame, want binary", name, typ)
+	}
+	if string(data) != "N" {
+		return fmt.Sprintf("%s: want the single byte N, got %q", name, data)
+	}
+	return ""
 }
 
 // applyHeaders turns the corpus's symbolic headers into wire headers.

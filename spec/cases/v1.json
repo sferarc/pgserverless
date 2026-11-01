@@ -550,7 +550,7 @@
       "level": 4,
       "spec": "9",
       "requires": "websocket",
-      "note": "Level 4 covers the upgrade only. Once the connection carries PostgreSQL frames, testing them is testing PostgreSQL.",
+      "note": "Level 4 covers the upgrade and what the server answers before the startup. Once the connection carries PostgreSQL frames to the database, testing them is testing PostgreSQL.",
       "request": {
         "path": "/v2",
         "method": "GET"
@@ -560,6 +560,43 @@
         "websocket": {
           "upgraded": true,
           "subprotocol": "pg"
+        }
+      }
+    },
+    {
+      "id": "websocket/ssl-request-declined",
+      "level": 4,
+      "spec": "9",
+      "requires": "websocket",
+      "note": "The WebSocket already carries the encryption, and the client's default configuration sends an SSLRequest expecting N.",
+      "request": {
+        "path": "/v2",
+        "method": "GET"
+      },
+      "expect": {
+        "status": 101,
+        "websocket": {
+          "upgraded": true,
+          "ssl_request_declined": true
+        }
+      }
+    },
+    {
+      "id": "websocket/gssenc-then-ssl-request-declined",
+      "level": 4,
+      "spec": "9",
+      "requires": "websocket",
+      "note": "libpq tries GSSAPI encryption before TLS, so it can send a GSSENCRequest and, after the N, an SSLRequest on the same connection. A server that declines only the first one breaks that client.",
+      "request": {
+        "path": "/v2",
+        "method": "GET"
+      },
+      "expect": {
+        "status": 101,
+        "websocket": {
+          "upgraded": true,
+          "ssl_request_declined": true,
+          "gssenc_request_declined": true
         }
       }
     },

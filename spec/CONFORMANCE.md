@@ -108,6 +108,6 @@ Worth writing down so the corpus is not oversold.
 1. Fixtures plus the level 1 cases. Done. That is enough to tell whether a new implementation is worth continuing.
 2. The harness, against the reference implementation. Done: levels 1 to 4 pass. Any failure at this stage is a corpus bug, since the corpus is derived from that server.
 3. The level 2 cases, which is the bulk of the work and the bulk of the value. Done for every family in SPEC section 6 (6.1 to 6.8) and the Appendix B spellings, which are marked `parses_equal` with the alternatives listed in `also`. The parameter path (SPEC 4.4) is covered by the `params/` cases. Not done: per-type breadth beyond one or two representatives per rule.
-4. Level 4. One case (the upgrade handshake) exists; the rest of the level is not written.
+4. Level 4. The upgrade handshake and the SSLRequest and GSSENCRequest decline have cases; host resolution and refusal before the upgrade do not, since the harness cannot arrange them yet.
 
 Step 2 is the honest checkpoint. If the corpus cannot make the implementation it was derived from pass, it is wrong.

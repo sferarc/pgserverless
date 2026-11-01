@@ -239,7 +239,14 @@
           "properties": {
             "upgraded": { "type": "boolean" },
             "subprotocol": { "type": "string" },
-            "ssl_request_declined": { "type": "boolean" }
+            "ssl_request_declined": {
+              "type": "boolean",
+              "description": "After the upgrade the harness sends an SSLRequest in a binary frame and expects the single byte N back (SPEC.md section 9)."
+            },
+            "gssenc_request_declined": {
+              "type": "boolean",
+              "description": "As ssl_request_declined, for a GSSENCRequest. When both are set the GSSENCRequest goes first, as libpq sends them, and both must be declined on the same connection."
+            }
           }
         }
       }
