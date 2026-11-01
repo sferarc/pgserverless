@@ -86,6 +86,8 @@ type Result struct {
 	WaitForCancel bool
 	// HoldAfterRows sends Rows, then holds the statement as WaitForCancel does, like a result still streaming.
 	HoldAfterRows bool
+	// Delay holds the statement this long before it answers, like a slow query.
+	Delay time.Duration
 	// Requires is a statement creating an object this one uses; until the session has run it, Parse and Execute fail with 42P01.
 	Requires string
 	// NeedsTxnBlock fails the statement with 25P01 outside a BEGIN, as LOCK TABLE, SAVEPOINT and DECLARE CURSOR do in a pipeline.
@@ -603,6 +605,10 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 	if res.WaitForCancel {
 		holdUntilCancelled(be, s)
 		return
+	}
+	if res.Delay > 0 {
+		_ = be.Flush()
+		time.Sleep(res.Delay)
 	}
 	if res.IsWrite {
 		s.pending = append(s.pending, sql)

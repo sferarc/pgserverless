@@ -52,6 +52,7 @@ type httpHandler struct {
 	maxResponseBytes int64
 	corsOrigins      []string
 	startupTimeout   time.Duration
+	bodyTimeout      time.Duration
 }
 
 // NewHTTPHandler returns an http.Handler serving POST /sql and GET /v2, with
@@ -74,7 +75,7 @@ func NewHTTPHandler(admit HTTPAdmission, opts ...HTTPOption) http.Handler {
 
 func (h *httpHandler) query(w http.ResponseWriter, r *http.Request) {
 	allowOrigin(w, r, h.corsOrigins)
-	serveSQL(w, r, func() (Upstream, error) { return h.admit(r) }, h.dialErrorFor(r), h.countStatements, h.maxResponseBytes)
+	serveSQL(w, r, func() (Upstream, error) { return h.admit(r) }, h.dialErrorFor(r), h.countStatements, h.maxResponseBytes, h.bodyTimeout)
 }
 
 func (h *httpHandler) upgrade(w http.ResponseWriter, r *http.Request) {

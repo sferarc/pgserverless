@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -178,6 +179,7 @@ type Handler struct {
 	countStatements  func(sql string) (int, error)
 	maxResponseBytes int64
 	startupTimeout   time.Duration
+	bodyTimeout      time.Duration
 }
 
 // NewHandler returns a Handler that admits requests through admit.
@@ -299,7 +301,7 @@ func verifyIssuer(cs tls.ConnectionState, roots *x509.CertPool) error {
 // Query handles one serverless HTTP SQL request: single statement or batch,
 // object or array rows, native or raw-text values.
 func (h *Handler) Query(c echo.Context) error {
-	serveSQL(c.Response(), c.Request(), func() (Upstream, error) { return h.admit(c) }, h.dialErrorFor(c), h.countStatements, h.maxResponseBytes)
+	serveSQL(c.Response(), c.Request(), func() (Upstream, error) { return h.admit(c) }, h.dialErrorFor(c), h.countStatements, h.maxResponseBytes, h.bodyTimeout)
 	return nil
 }
 
@@ -311,8 +313,9 @@ func (h *Handler) dialErrorFor(c echo.Context) func(error) {
 }
 
 // serveSQL is the transport-independent core of POST /sql.
-func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error), maxResponse int64) {
+func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error), maxResponse int64, bodyTimeout time.Duration) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+	limitBodyRead(w, r, bodyTimeout)
 
 	up, aerr := admit()
 	if aerr != nil {
@@ -422,6 +425,9 @@ func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 	if err := dec.Decode(&body); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return nil, fmt.Errorf("%w (max is %d bytes)", ErrRequestTooLarge, MaxRequestBodyBytes)
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, fmt.Errorf("%w: the body did not arrive in time", ErrInvalidRequest)
 		}
 		return nil, ErrInvalidRequest
 	}
