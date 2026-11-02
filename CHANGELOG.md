@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- 9fa766b: The reference server (`cmd/pgserverless`) ships a Dockerfile, a compose example that queries it through both transports, and a README of its settings. It reads `PGSERVERLESS_LOG_LEVEL` (`debug`, `info`, `warn` or `error`; anything else stops it at startup) and accepts `PGSERVERLESS_ALLOW_UNAUTHENTICATED=true` as another spelling of `PGSERVERLESS_ALLOW_REMOTE=true`.
+
 ## 0.5.0
 
 ### Minor Changes
