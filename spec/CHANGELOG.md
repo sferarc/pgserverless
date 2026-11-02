@@ -2,6 +2,10 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.1.1 (draft)
+
+- Appendix B items 4 and 6 state only what is still open. Item 4 said the reference implementation sets no size limit of its own; it refuses a request body over 10 MiB with 413, and its server refuses with 507 a response whose row values pass 10 MiB. Item 6 said its `time`, `interval` and `tsvector` spellings differ from PostgreSQL's; they now match.
+
 ## 0.1.0 (draft)
 
 The first published version.
