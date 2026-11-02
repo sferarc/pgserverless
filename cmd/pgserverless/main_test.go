@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/x509"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -257,6 +258,7 @@ func TestRunRedactsDatabaseURL(t *testing.T) {
 func TestRunRefusesRemoteListener(t *testing.T) {
 	t.Setenv("PGSERVERLESS_ADDR", "0.0.0.0:0")
 	t.Setenv("PGSERVERLESS_ALLOW_REMOTE", "")
+	t.Setenv("PGSERVERLESS_ALLOW_UNAUTHENTICATED", "")
 	t.Setenv("PGSERVERLESS_AUTH_TOKEN", "")
 	t.Setenv("DATABASE_URL", "postgres://u:p@db/app")
 	if err := run(); err == nil || !strings.Contains(err.Error(), "refusing") {
@@ -373,5 +375,39 @@ func TestRunAcceptsRemoteListenerWithAuthToken(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@db:bad/app")
 	if err := run(); err == nil || strings.Contains(err.Error(), "refusing") {
 		t.Errorf("run() = %v, want the DATABASE_URL error, not a refusal", err)
+	}
+}
+
+func TestRunAcceptsRemoteListenerWithEitherAllowSetting(t *testing.T) {
+	for _, name := range []string{"PGSERVERLESS_ALLOW_REMOTE", "PGSERVERLESS_ALLOW_UNAUTHENTICATED"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("PGSERVERLESS_ADDR", "0.0.0.0:0")
+			t.Setenv("PGSERVERLESS_AUTH_TOKEN", "")
+			t.Setenv("PGSERVERLESS_ALLOW_REMOTE", "")
+			t.Setenv("PGSERVERLESS_ALLOW_UNAUTHENTICATED", "")
+			t.Setenv(name, "true")
+			t.Setenv("DATABASE_URL", "postgres://u:p@db:bad/app")
+			if err := run(); err == nil || strings.Contains(err.Error(), "refusing") {
+				t.Errorf("run() = %v, want the DATABASE_URL error, not a refusal", err)
+			}
+		})
+	}
+}
+
+func TestLogLevel(t *testing.T) {
+	for in, want := range map[string]slog.Level{"": slog.LevelInfo, "info": slog.LevelInfo, "DEBUG": slog.LevelDebug, " warn ": slog.LevelWarn, "error": slog.LevelError} {
+		if got, err := logLevel(in); err != nil || got != want {
+			t.Errorf("logLevel(%q) = %v, %v, want %v", in, got, err, want)
+		}
+	}
+	if _, err := logLevel("verbose"); err == nil {
+		t.Error(`logLevel("verbose") = nil error, want a refusal`)
+	}
+}
+
+func TestRunRefusesAnUnknownLogLevel(t *testing.T) {
+	t.Setenv("PGSERVERLESS_LOG_LEVEL", "verbose")
+	if err := run(); err == nil || !strings.Contains(err.Error(), "PGSERVERLESS_LOG_LEVEL") {
+		t.Errorf("run() = %v, want the log level refused", err)
 	}
 }

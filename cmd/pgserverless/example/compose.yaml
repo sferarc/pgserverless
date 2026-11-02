@@ -1,0 +1,39 @@
+# A database, pgserverless in front of it, and a script that queries through both transports:
+#   docker compose up --build
+#
+# Run it from a github.com/sferarc/pgserverless checkout. The password is in this file and the server has no token, so it is for a laptop only.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: pw
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  pgserverless:
+    build:
+      context: ../../..
+      dockerfile: cmd/pgserverless/Dockerfile
+    environment:
+      DATABASE_URL: postgres://db:5432/app?sslmode=disable
+      # The compose network decides who reaches the server, so it starts without a token.
+      PGSERVERLESS_ALLOW_REMOTE: "true"
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  client:
+    build:
+      context: .
+    environment:
+      PGSERVERLESS_URL: http://pgserverless:4000
+      DATABASE_URL: postgres://app:pw@db:5432/app
+    depends_on:
+      - pgserverless

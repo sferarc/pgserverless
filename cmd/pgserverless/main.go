@@ -7,9 +7,10 @@
 // PGSERVERLESS_AUTH_TOKEN, when set, must arrive as Authorization: Bearer on
 // POST /sql and GET /v2. A listener beyond loopback needs that token or
 // PGSERVERLESS_ALLOW_REMOTE=true, which says the network already restricts
-// who reaches it. PGSERVERLESS_CORS_ORIGINS, a
-// comma separated list or "*", lets browser pages on those origins call
-// POST /sql; unset, no cross-origin page can read a response.
+// who reaches it (PGSERVERLESS_ALLOW_UNAUTHENTICATED=true is read the same way).
+// PGSERVERLESS_CORS_ORIGINS, a comma separated list or "*", lets browser pages
+// on those origins call POST /sql; unset, no cross-origin page can read a
+// response. PGSERVERLESS_LOG_LEVEL is debug, info (the default), warn or error.
 package main
 
 import (
@@ -41,12 +42,18 @@ func main() {
 }
 
 func run() error {
+	level, err := logLevel(os.Getenv("PGSERVERLESS_LOG_LEVEL"))
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
 	addr := os.Getenv("PGSERVERLESS_ADDR")
 	if addr == "" {
 		addr = defaultAddr
 	}
 	token := os.Getenv("PGSERVERLESS_AUTH_TOKEN")
-	if !isLoopback(addr) && token == "" && os.Getenv("PGSERVERLESS_ALLOW_REMOTE") != "true" {
+	if !isLoopback(addr) && token == "" && !allowRemote() {
 		return fmt.Errorf("refusing to listen on %s with no authentication: set PGSERVERLESS_AUTH_TOKEN, or PGSERVERLESS_ALLOW_REMOTE=true if the network already restricts access", addr)
 	}
 
@@ -225,6 +232,25 @@ func splitOrigins(s string) []string {
 		}
 	}
 	return out
+}
+
+// allowRemote also reads PGSERVERLESS_ALLOW_UNAUTHENTICATED, the older spelling, so deployments that set it keep starting.
+func allowRemote() bool {
+	return os.Getenv("PGSERVERLESS_ALLOW_REMOTE") == "true" || os.Getenv("PGSERVERLESS_ALLOW_UNAUTHENTICATED") == "true"
+}
+
+func logLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("PGSERVERLESS_LOG_LEVEL %q is not debug, info, warn or error", s)
 }
 
 // isLoopback reports whether addr binds only to the loopback interface.
