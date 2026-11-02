@@ -68,7 +68,7 @@ The corpus needs a real PostgreSQL. Three consequences worth stating before anyo
 
 - The version matters. `time` spelling, `interval` spelling and `tsvector` escaping all vary. The report MUST record the server version it ran against.
 - Rendering settings matter too. `money` follows `lc_monetary`, and timestamps and intervals follow `DateStyle` and `IntervalStyle`. The corpus pins all three with the `session_settings` fixture, which sets them on the database and so reaches sessions opened afterwards. `timestamptz` renders in the session `TimeZone`, which the corpus does not pin, so it is left out of the tolerant cases.
-- Some cases cannot be expressed as a fixture plus a query, because they are about connection-level state or failure. Admission refusals (section 3) and upstream-unreachable errors (7.3) are configuration, not data. Those cases carry `"requires": "unreachable_upstream"` and a harness that cannot arrange the condition MUST report them as skipped rather than passed.
+- Some cases cannot be expressed as a fixture plus a query, because they are about connection-level state or failure. Admission refusals (section 3) and upstream-unreachable errors (7.3) are configuration, not data. Those cases carry `"requires": "unreachable_upstream"` and a harness that cannot arrange the condition MUST report them as skipped rather than passed. The level 4 refusals are arranged the same way: `refusing_admission` sends the case to an instance of the server configured to refuse every request (`pgsconform -refusing-server`), and `unresolvable_host` sends the upgrade with a Host header the server resolves to no target (`pgsconform -unresolvable-host`). A server that serves one database resolves every Host, so it has no unresolvable host to offer.
 
 Skipped is a first-class outcome. A report claiming 100% where a third of the cases were skipped is worse than one that says so.
 
@@ -110,6 +110,6 @@ Worth writing down so the corpus is not oversold.
 1. Fixtures plus the level 1 cases. Done. That is enough to tell whether a new implementation is worth continuing.
 2. The harness, against the reference implementation. Done: levels 1 to 4 pass. Any failure at this stage is a corpus bug, since the corpus is derived from that server.
 3. The level 2 cases, which is the bulk of the work and the bulk of the value. Done for every family in SPEC section 6 (6.1 to 6.8) and the Appendix B spellings, which are marked `parses_equal` with the alternatives listed in `also`. The parameter path (SPEC 4.4) is covered by the `params/` cases. Not done: per-type breadth beyond one or two representatives per rule.
-4. Level 4. The upgrade handshake and the SSLRequest and GSSENCRequest decline have cases; host resolution and refusal before the upgrade do not, since the harness cannot arrange them yet.
+4. Level 4. Done: the upgrade handshake, the SSLRequest and GSSENCRequest decline, and the refusals before the upgrade of an unresolvable host and of a request admission turns away.
 
 Step 2 is the honest checkpoint. If the corpus cannot make the implementation it was derived from pass, it is wrong.

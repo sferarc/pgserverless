@@ -52,6 +52,8 @@ func run() error {
 		reportPath = flag.String("report", "", "write the JSON report here (default stdout summary only)")
 		implName   = flag.String("impl", "pgserverless-go", "implementation name recorded in the report")
 		connString = flag.String("client-conn", "", "connection string sent as the request header (default: -dsn)")
+		badHost    = flag.String("unresolvable-host", "", "a Host the server under test resolves to no target (cases needing one are skipped without it)")
+		refusing   = flag.String("refusing-server", "", "base URL of an instance of the server under test that refuses admission to every request (cases needing one are skipped without it)")
 	)
 	flag.Parse()
 
@@ -80,7 +82,12 @@ func run() error {
 		Results:        map[string]*levelResult{},
 	}
 
-	runner := &runner{server: strings.TrimRight(*serverURL, "/"), connString: *connString}
+	runner := &runner{
+		server:           strings.TrimRight(*serverURL, "/"),
+		connString:       *connString,
+		unresolvableHost: *badHost,
+		refusingServer:   strings.TrimRight(*refusing, "/"),
+	}
 	for _, c := range corpus.Cases {
 		lvl := strconv.Itoa(c.Level)
 		if rep.Results[lvl] == nil {
@@ -262,8 +269,35 @@ const (
 )
 
 type runner struct {
-	server     string
-	connString string
+	server           string
+	connString       string
+	unresolvableHost string
+	refusingServer   string
+}
+
+// target is where a case is sent: the server, and the Host header to send when it is not the server's own.
+type target struct {
+	server string
+	host   string
+}
+
+// targetFor arranges what a case requires, or says why it cannot.
+func (r *runner) targetFor(c kase) (target, string) {
+	switch c.Requires {
+	case "", "websocket":
+		return target{server: r.server}, ""
+	case "unresolvable_host":
+		if r.unresolvableHost == "" {
+			return target{}, "harness cannot arrange \"unresolvable_host\": pass -unresolvable-host"
+		}
+		return target{server: r.server, host: r.unresolvableHost}, ""
+	case "refusing_admission":
+		if r.refusingServer == "" {
+			return target{}, "harness cannot arrange \"refusing_admission\": pass -refusing-server"
+		}
+		return target{server: r.refusingServer}, ""
+	}
+	return target{}, fmt.Sprintf("harness cannot arrange %q", c.Requires)
 }
 
 func (r *runner) runCase(ctx context.Context, c kase) (outcome, string) {
@@ -272,19 +306,24 @@ func (r *runner) runCase(ctx context.Context, c kase) (outcome, string) {
 		return outcomeFail, fmt.Sprintf("corpus case is malformed: %v", err)
 	}
 
-	if c.Requires == "websocket" {
+	// GET is the WebSocket upgrade; every other case is a POST /sql.
+	if c.Request.Method == http.MethodGet {
 		return r.runWebSocket(ctx, c, exp)
 	}
-	if c.Requires != "" {
-		return outcomeSkip, fmt.Sprintf("harness cannot arrange %q", c.Requires)
+	t, why := r.targetFor(c)
+	if why != "" {
+		return outcomeSkip, why
 	}
-	return r.runHTTP(ctx, c, exp)
+	return r.runHTTP(ctx, c, exp, t)
 }
 
-func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation) (outcome, string) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.server+c.Request.Path, bytes.NewReader(c.Request.Body))
+func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation, t target) (outcome, string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.server+c.Request.Path, bytes.NewReader(c.Request.Body))
 	if err != nil {
 		return outcomeFail, err.Error()
+	}
+	if t.host != "" {
+		req.Host = t.host
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Neon-Connection-String", r.connString)
@@ -317,18 +356,26 @@ func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation) (outcome,
 	return outcomePass, ""
 }
 
-// runWebSocket covers level 4: the upgrade and the server's own answers before
-// the startup. Past the startup the frames are relayed, so testing them would be
-// testing PostgreSQL.
+// runWebSocket covers level 4: the upgrade, a refusal before it, and the
+// server's own answers before the startup. Past the startup the frames are
+// relayed, so testing them would be testing PostgreSQL.
 func (r *runner) runWebSocket(ctx context.Context, c kase, exp expectation) (outcome, string) {
-	url := strings.Replace(r.server, "http", "ws", 1) + c.Request.Path
+	t, why := r.targetFor(c)
+	if why != "" {
+		return outcomeSkip, why
+	}
+	url := strings.Replace(t.server, "http", "ws", 1) + c.Request.Path
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	conn, resp, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{
 		Subprotocols: []string{"pg"},
 		HTTPHeader:   http.Header{"Neon-Connection-String": []string{r.connString}},
+		Host:         t.host,
 	})
+	if exp.WebSocket != nil && !exp.WebSocket.Upgraded {
+		return checkRefusedUpgrade(exp, conn, resp, err)
+	}
 	if err != nil {
 		if resp != nil {
 			// Closing the handshake body belongs in this branch and nowhere
@@ -365,6 +412,35 @@ func (r *runner) runWebSocket(ctx context.Context, c kase, exp expectation) (out
 	}
 	if exp.WebSocket.SSLRequestDeclined {
 		if p := checkEncryptionDeclined(ctx, conn, "SSLRequest", sslRequestCode); p != "" {
+			return outcomeFail, p
+		}
+	}
+	return outcomePass, ""
+}
+
+// checkRefusedUpgrade passes a case whose upgrade must be refused with an
+// ordinary HTTP error the client can read (SPEC.md section 9), never a 101.
+func checkRefusedUpgrade(exp expectation, conn *websocket.Conn, resp *http.Response, err error) (outcome, string) {
+	if err == nil {
+		conn.CloseNow()
+		return outcomeFail, "upgraded with 101, want an HTTP error before the upgrade"
+	}
+	if resp == nil {
+		return outcomeFail, fmt.Sprintf("want an HTTP error before the upgrade, got no response: %v", err)
+	}
+	// On a failed dial the library has already read up to 1 KiB of the body into resp.Body.
+	var body []byte
+	if resp.Body != nil {
+		body, _ = io.ReadAll(resp.Body)
+	}
+	if exp.Status == nil && exp.StatusClass == "" && resp.StatusCode < 400 {
+		return outcomeFail, fmt.Sprintf("status: want an error status, got %d", resp.StatusCode)
+	}
+	if p := checkStatus(exp, resp.StatusCode); p != "" {
+		return outcomeFail, p + bodyHint(body)
+	}
+	if exp.Error != nil {
+		if p := checkError(exp.Error, body); p != "" {
 			return outcomeFail, p
 		}
 	}

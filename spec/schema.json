@@ -69,8 +69,8 @@
         },
         "requires": {
           "type": "string",
-          "enum": ["unreachable_upstream", "refusing_admission", "websocket"],
-          "description": "A condition the harness must arrange that is configuration rather than data. A harness that cannot arrange it MUST report the case skipped, never passed."
+          "enum": ["unreachable_upstream", "refusing_admission", "unresolvable_host", "websocket"],
+          "description": "A condition the harness must arrange that is configuration rather than data: refusing_admission sends the case to an instance that refuses every request, unresolvable_host sends it with a Host header the server resolves to no target. A harness that cannot arrange it MUST report the case skipped, never passed."
         },
         "compare": {
           "type": "string",
@@ -213,6 +213,7 @@
               "items": {
                 "type": "string",
                 "enum": [
+                  "message",
                   "severity",
                   "code",
                   "detail",
@@ -245,7 +246,10 @@
           "additionalProperties": false,
           "description": "For level 4 handshake cases.",
           "properties": {
-            "upgraded": { "type": "boolean" },
+            "upgraded": {
+              "type": "boolean",
+              "description": "false requires the upgrade to be refused with an ordinary HTTP response (no 101), checked against status, status_class and error like any other error response."
+            },
             "subprotocol": { "type": "string" },
             "ssl_request_declined": {
               "type": "boolean",

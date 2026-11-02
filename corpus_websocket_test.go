@@ -24,7 +24,10 @@ type corpusWSCase struct {
 		Path string `json:"path"`
 	} `json:"request"`
 	Expect struct {
-		Status    int `json:"status"`
+		Status int `json:"status"`
+		Error  *struct {
+			HasFields []string `json:"has_fields"`
+		} `json:"error"`
 		WebSocket *struct {
 			Upgraded              bool   `json:"upgraded"`
 			Subprotocol           string `json:"subprotocol"`
@@ -95,4 +98,70 @@ func TestCorpusWebSocketCasesPassAgainstTheReferenceHandler(t *testing.T) {
 		})
 	}
 	require.GreaterOrEqual(t, ran, 3, "want the handshake and both encryption declines")
+}
+
+// The refusal cases pass against NewHTTPHandler with the two admissions they
+// need: one resolving the target from the Host header, one refusing everything.
+func TestCorpusRefusalCasesPassAgainstTheReferenceHandler(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("spec", "cases", "v1.json"))
+	require.NoError(t, err)
+	var corpus struct {
+		Cases []corpusWSCase `json:"cases"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &corpus))
+
+	const badHost = "unknown.example.test"
+	static := StaticHTTPUpstream("127.0.0.1:1")
+	byHost := func(r *http.Request) (Upstream, error) {
+		if r.Host == badHost {
+			return Upstream{}, &AdmissionError{Status: http.StatusNotFound, Message: "no such endpoint"}
+		}
+		return static(r)
+	}
+	refuseAll := func(*http.Request) (Upstream, error) {
+		return Upstream{}, &AdmissionError{Status: http.StatusUnauthorized, Message: "unauthorized"}
+	}
+	servers := map[string]struct {
+		admit HTTPAdmission
+		host  string
+	}{
+		"unresolvable_host":  {byHost, badHost},
+		"refusing_admission": {refuseAll, ""},
+	}
+
+	ran := 0
+	for _, c := range corpus.Cases {
+		arranged, ok := servers[c.Requires]
+		if !ok {
+			continue
+		}
+		ran++
+		t.Run(c.ID, func(t *testing.T) {
+			srv := httptest.NewServer(NewHTTPHandler(static, WithHTTPWebSocketAdmission(arranged.admit)))
+			t.Cleanup(srv.Close)
+			ctx, cancel := context.WithTimeout(context.Background(), wsTestTimeout)
+			defer cancel()
+			ws, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+c.Request.Path, &websocket.DialOptions{
+				Subprotocols: []string{wsSubprotocol},
+				HTTPHeader:   http.Header{"Neon-Connection-String": []string{"postgresql://u:p@" + conformanceHost + "/db"}},
+				Host:         arranged.host,
+			})
+			if err == nil {
+				ws.CloseNow()
+			}
+			require.NotNil(t, c.Expect.WebSocket)
+			require.False(t, c.Expect.WebSocket.Upgraded)
+			require.Error(t, err, "want an HTTP error before the upgrade")
+			require.NotNil(t, resp)
+			assert.GreaterOrEqual(t, resp.StatusCode, 400)
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			if c.Expect.Error != nil {
+				for _, f := range c.Expect.Error.HasFields {
+					assert.NotEmpty(t, body[f], "refusal body is missing %s", f)
+				}
+			}
+		})
+	}
+	require.Equal(t, 2, ran, "want the unresolvable host and the refused admission cases")
 }

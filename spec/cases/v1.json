@@ -631,6 +631,46 @@
       }
     },
     {
+      "id": "websocket/unresolvable-host-refused-before-upgrade",
+      "level": 4,
+      "spec": "9",
+      "requires": "unresolvable_host",
+      "note": "There is no SNI on this path, so the Host header names the target. A target that cannot be resolved is refused with an HTTP error the client can read, never a 101 and then a close, which the client reports as a network fault. Section 3 suggests 404; any error status passes.",
+      "request": {
+        "path": "/v2",
+        "method": "GET"
+      },
+      "expect": {
+        "status_class": "error",
+        "error": {
+          "has_fields": ["message"]
+        },
+        "websocket": {
+          "upgraded": false
+        }
+      }
+    },
+    {
+      "id": "websocket/admission-refused-before-upgrade",
+      "level": 4,
+      "spec": "9",
+      "requires": "refusing_admission",
+      "note": "Admission runs before the upgrade, and before any authentication inside the tunnel. A refusal is an HTTP error with the error shape of section 7.1, in the status that describes the reason.",
+      "request": {
+        "path": "/v2",
+        "method": "GET"
+      },
+      "expect": {
+        "status_class": "error",
+        "error": {
+          "has_fields": ["message"]
+        },
+        "websocket": {
+          "upgraded": false
+        }
+      }
+    },
+    {
       "id": "native/int8-minimum-as-string",
       "level": 2,
       "spec": "6.1",
