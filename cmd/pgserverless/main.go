@@ -10,7 +10,9 @@
 // who reaches it (PGSERVERLESS_ALLOW_UNAUTHENTICATED=true is read the same way).
 // PGSERVERLESS_CORS_ORIGINS, a comma separated list or "*", lets browser pages
 // on those origins call POST /sql; unset, no cross-origin page can read a
-// response. PGSERVERLESS_LOG_LEVEL is debug, info (the default), warn or error.
+// response. With no token, those origins are also the only foreign ones whose
+// WebSocket upgrades are accepted, and a loopback listener refuses a Host
+// that is not a loopback name. PGSERVERLESS_LOG_LEVEL is debug, info (the default), warn or error.
 package main
 
 import (
@@ -25,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -71,11 +74,13 @@ func run() error {
 	if tls.roots, err = loadRootCAs(tls.rootCert); err != nil {
 		return err
 	}
-	mux := newMux(
-		requireToken(token, httpAdmission(db, tls)),
-		requireToken(token, wsAdmission(db, tls)),
-		splitOrigins(os.Getenv("PGSERVERLESS_CORS_ORIGINS")),
-	)
+	origins := splitOrigins(os.Getenv("PGSERVERLESS_CORS_ORIGINS"))
+	admitHTTP := requireToken(token, httpAdmission(db, tls))
+	admitWS := requireToken(token, wsAdmission(db, tls))
+	if token == "" {
+		admitHTTP, admitWS = guardBrowsers(isLoopback(addr), origins, admitHTTP, admitWS)
+	}
+	mux := newMux(admitHTTP, admitWS, origins)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -143,6 +148,59 @@ func requireToken(token string, admit pgserverless.HTTPAdmission) pgserverless.H
 		}
 		return admit(r)
 	}
+}
+
+// guardBrowsers keeps web pages off a tokenless server: browsers apply no CORS to a WebSocket, and a DNS rebinding
+// name makes a page same-origin with a loopback listener, so neither Origin nor Host would otherwise be checked.
+func guardBrowsers(loopback bool, origins []string, admitHTTP, admitWS pgserverless.HTTPAdmission) (pgserverless.HTTPAdmission, pgserverless.HTTPAdmission) {
+	admitWS = requireAllowedOrigin(origins, admitWS)
+	if loopback {
+		admitHTTP, admitWS = requireLoopbackHost(admitHTTP), requireLoopbackHost(admitWS)
+	}
+	return admitHTTP, admitWS
+}
+
+// requireAllowedOrigin admits a request with no Origin (not a browser), its own origin, or one origins lists.
+func requireAllowedOrigin(origins []string, admit pgserverless.HTTPAdmission) pgserverless.HTTPAdmission {
+	return func(r *http.Request) (pgserverless.Upstream, error) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && !slices.Contains(origins, "*") && !slices.Contains(origins, origin) && !sameOrigin(origin, r.Host) {
+			return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusForbidden, Message: "origin not allowed: list it in PGSERVERLESS_CORS_ORIGINS"}
+		}
+		return admit(r)
+	}
+}
+
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	return err == nil && u.Host != "" && strings.EqualFold(u.Host, host)
+}
+
+// requireLoopbackHost refuses a Host that is not a loopback name, which on a loopback listener only DNS rebinding sends.
+func requireLoopbackHost(admit pgserverless.HTTPAdmission) pgserverless.HTTPAdmission {
+	return func(r *http.Request) (pgserverless.Upstream, error) {
+		if !isLoopbackHost(r.Host) {
+			return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusForbidden, Message: "host is not a loopback name: set PGSERVERLESS_AUTH_TOKEN to serve other names"}
+		}
+		return admit(r)
+	}
+}
+
+// isLoopbackHost reads a Host header; an empty one is allowed since every browser sends it.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), "."))
+	// Browsers resolve localhost and its subdomains to loopback themselves (RFC 6761), so DNS cannot rebind them.
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // bearerMatches reads the scheme case-insensitively (RFC 7235 section 2.1) and compares the credential in constant time.

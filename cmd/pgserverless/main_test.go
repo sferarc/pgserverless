@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/x509"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -409,5 +410,134 @@ func TestRunRefusesAnUnknownLogLevel(t *testing.T) {
 	t.Setenv("PGSERVERLESS_LOG_LEVEL", "verbose")
 	if err := run(); err == nil || !strings.Contains(err.Error(), "PGSERVERLESS_LOG_LEVEL") {
 		t.Errorf("run() = %v, want the log level refused", err)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"":                      true,
+		"localhost":             true,
+		"LOCALHOST:4000":        true,
+		"app.localhost:4000":    true,
+		"localhost.:4000":       true,
+		"127.0.0.1:4000":        true,
+		"127.1.2.3":             true,
+		"[::1]:4000":            true,
+		"[::1]":                 true,
+		"attacker.example:4000": false,
+		"localhost.example":     false,
+		"10.0.0.5:4000":         false,
+		"0.0.0.0:4000":          false,
+	} {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// guardedStatus runs one request through guardBrowsers and returns the status admission answered.
+func guardedStatus(t *testing.T, loopback bool, origins []string, ws bool, host, origin string) int {
+	t.Helper()
+	admitted := func(*http.Request) (pgserverless.Upstream, error) {
+		return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusTeapot, Message: "admitted"}
+	}
+	admitHTTP, admitWS := guardBrowsers(loopback, origins, admitted, admitted)
+	admit, method, path := admitHTTP, http.MethodPost, "/sql"
+	if ws {
+		admit, method, path = admitWS, http.MethodGet, "/v2"
+	}
+	req := httptest.NewRequest(method, "http://"+host+path, nil)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	_, err := admit(req)
+	var aerr *pgserverless.AdmissionError
+	if !errors.As(err, &aerr) {
+		t.Fatalf("admission returned %v, want an AdmissionError", err)
+	}
+	return aerr.Status
+}
+
+func TestTokenlessWebSocketRefusesForeignOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		origins []string
+		origin  string
+		want    int
+	}{
+		{"no Origin, as from Node", nil, "", http.StatusTeapot},
+		{"another site", nil, "https://attacker.example", http.StatusForbidden},
+		{"opaque origin", nil, "null", http.StatusForbidden},
+		{"a dev page on another port", nil, "http://localhost:3000", http.StatusForbidden},
+		{"its own origin", nil, "http://localhost:4000", http.StatusTeapot},
+		{"a listed origin", []string{"http://localhost:3000"}, "http://localhost:3000", http.StatusTeapot},
+		{"any origin under *", []string{"*"}, "https://attacker.example", http.StatusTeapot},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := guardedStatus(t, true, tc.origins, true, "localhost:4000", tc.origin); got != tc.want {
+				t.Errorf("status %d, want %d", got, tc.want)
+			}
+		})
+	}
+	// POST /sql is left to CORS, which already keeps a foreign page from sending Connection-String.
+	if got := guardedStatus(t, true, nil, false, "localhost:4000", "https://attacker.example"); got != http.StatusTeapot {
+		t.Errorf("POST /sql with a foreign Origin: status %d, want it left to CORS", got)
+	}
+}
+
+func TestTokenlessLoopbackListenerRefusesARebindingHost(t *testing.T) {
+	for _, ws := range []bool{false, true} {
+		if got := guardedStatus(t, true, nil, ws, "attacker.example:4000", ""); got != http.StatusForbidden {
+			t.Errorf("ws=%v: rebinding Host answered %d, want 403", ws, got)
+		}
+		if got := guardedStatus(t, true, nil, ws, "127.0.0.1:4000", ""); got != http.StatusTeapot {
+			t.Errorf("ws=%v: loopback Host answered %d, want it admitted", ws, got)
+		}
+		// Beyond loopback the server's own name is unknown, so PGSERVERLESS_ALLOW_REMOTE leaves Host to the network.
+		if got := guardedStatus(t, false, nil, ws, "pgserverless.internal:4000", ""); got != http.StatusTeapot {
+			t.Errorf("ws=%v: remote listener Host answered %d, want it admitted", ws, got)
+		}
+	}
+}
+
+func TestTokenlessGuardRefusesBeforeTheUpgrade(t *testing.T) {
+	inner := func(*http.Request) (pgserverless.Upstream, error) {
+		return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusTeapot, Message: "admitted"}
+	}
+	admitHTTP, admitWS := guardBrowsers(true, nil, inner, inner)
+	srv := httptest.NewServer(newMux(admitHTTP, admitWS, nil))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Origin", "https://attacker.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-origin upgrade: status %d, want 403 and no 101", resp.StatusCode)
+	}
+
+	// GET /health runs no admission and touches no database, so it answers any Host.
+	req, err = http.NewRequest(http.MethodGet, srv.URL+"/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "attacker.example"
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /health: status %d, want 200", resp.StatusCode)
 	}
 }

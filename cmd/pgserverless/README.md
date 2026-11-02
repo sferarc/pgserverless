@@ -71,7 +71,7 @@ With `PGSERVERLESS_AUTH_TOKEN` set, every request needs `Authorization: Bearer <
 | `PGSERVERLESS_ADDR` | `127.0.0.1:4000` (`:4000` in the image) | Listen address. |
 | `PGSERVERLESS_AUTH_TOKEN` | none | When set, `POST /sql` and `GET /v2` require `Authorization: Bearer <token>`, compared in constant time. |
 | `PGSERVERLESS_ALLOW_REMOTE` | `false` | `true` lets the server listen beyond loopback with no token. `PGSERVERLESS_ALLOW_UNAUTHENTICATED=true` is read the same way. |
-| `PGSERVERLESS_CORS_ORIGINS` | none | Comma separated origins, or `*`, allowed to call `POST /sql` from a browser. Unset, no cross-origin page can read a response. |
+| `PGSERVERLESS_CORS_ORIGINS` | none | Comma separated origins, or `*`, allowed to call `POST /sql` from a browser. Unset, no cross-origin page can read a response. With no token, these are also the only other origins whose browser WebSocket upgrades are accepted. |
 | `PGSERVERLESS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 
 TLS to the database follows `DATABASE_URL`'s `sslmode` as libpq reads it:
@@ -92,6 +92,8 @@ Anyone who can reach this server and knows a database credential can use the dat
 
 - It refuses to listen beyond loopback with no token unless `PGSERVERLESS_ALLOW_REMOTE=true` says the network already restricts access, as it does behind a private network or a service mesh.
 - It sends no CORS headers unless origins are listed, and a request without its own `Connection-String` is refused, so a cross-site form post cannot run SQL.
+- With no token, it refuses a WebSocket upgrade from a browser page on an origin `PGSERVERLESS_CORS_ORIGINS` does not list, since browsers apply no CORS to WebSockets. A page on `http://localhost:3000` that uses `Pool` needs that origin listed.
+- With no token on a loopback listener, it refuses a `Host` other than `localhost`, a `.localhost` name or a loopback address, so a DNS rebinding page cannot reach it. To serve another name, set a token.
 - It does not terminate TLS. Run it behind something that does, or where the hop is private.
 
 ## SCRAM and pipelining
