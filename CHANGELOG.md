@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2
+
+### Patch Changes
+
+- 709660c: The response cap set by `WithMaxResponseBytes` or `WithHTTPMaxResponseBytes` now charges each row its DataRow framing (7 bytes, plus 4 per column) on top of its values. It counted values only, so a result of NULLs or of rows with no columns cost nothing and could grow without bound under any cap. A capped response now reaches 507 a little sooner than before.
+- e8930a7: The conformance corpus checks every type the SPEC section 6 rules name, not one or two per rule: `float4` infinity and `float4[]`, infinite `timestamp` and the `date[]` and `timestamp[]` forms, `time`, `interval` and the array forms of each 6.4 type (including `box[]`, whose array delimiter is a semicolon), `inet[]` and `cidr[]`, and the numeric, date and timestamp ranges with their multiranges. The library's output does not change.
+
 ## 0.6.1
 
 ### Patch Changes
