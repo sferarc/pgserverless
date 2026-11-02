@@ -162,9 +162,10 @@ func WithStatementCounter(fn func(sql string) (int, error)) Option {
 	return func(h *Handler) { h.countStatements = fn }
 }
 
-// WithMaxResponseBytes fails a POST /sql response with 507 once the row values
-// PostgreSQL sent for it pass n bytes, as Neon does, so one cross join cannot
-// exhaust the server's memory. Zero, the default, leaves responses uncapped.
+// WithMaxResponseBytes fails a POST /sql response with 507 once the rows
+// PostgreSQL sent for it, framing included, pass n bytes, as Neon does, so one
+// cross join cannot exhaust the server's memory. Zero, the default, leaves
+// responses uncapped.
 func WithMaxResponseBytes(n int64) Option {
 	return func(h *Handler) { h.maxResponseBytes = n }
 }

@@ -12,7 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tenTextRows is ten rows of a ten-byte text value: 100 bytes of row values.
+// tenTextRowsBytes is what tenTextRows charges the cap: each DataRow is 7 bytes
+// of framing, a 4 byte length word and the 10 byte value.
+const tenTextRowsBytes = 10 * (7 + 4 + 10)
+
+// tenTextRows is ten rows of a ten-byte text value.
 func tenTextRows() pgfake.Result {
 	rows := make([][]any, 10)
 	for i := range rows {
@@ -44,7 +48,7 @@ func TestResponseOverTheCapIs507(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT v FROM t", tenTextRows())
 
-	for name, h := range cappedServers(pg, 99) {
+	for name, h := range cappedServers(pg, tenTextRowsBytes-1) {
 		for mode, headers := range map[string]map[string]string{
 			"native":   nil,
 			"raw text": {"Neon-Raw-Text-Output": "true", "Neon-Array-Mode": "true"},
@@ -53,7 +57,7 @@ func TestResponseOverTheCapIs507(t *testing.T) {
 				rec := doSQL(h, `{"query":"SELECT v FROM t"}`, headers)
 
 				require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
-				assert.Equal(t, "response is too large (max is 99 bytes)", decodeError(t, rec).Message)
+				assert.Equal(t, "response is too large (max is 209 bytes)", decodeError(t, rec).Message)
 			})
 		}
 	}
@@ -68,7 +72,7 @@ func TestSingleStatementOverTheCapStopsReading(t *testing.T) {
 	streaming.HoldAfterRows = true
 	pg.SetResult("SELECT v FROM t", streaming)
 
-	for name, h := range cappedServers(pg, 99) {
+	for name, h := range cappedServers(pg, tenTextRowsBytes-1) {
 		for mode, headers := range map[string]map[string]string{
 			"native":   nil,
 			"raw text": driverHeaders,
@@ -77,7 +81,7 @@ func TestSingleStatementOverTheCapStopsReading(t *testing.T) {
 				rec := doSQLUntil(t, h, `{"query":"SELECT v FROM t"}`, headers, 2*time.Second)
 
 				require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
-				assert.Equal(t, "response is too large (max is 99 bytes)", decodeError(t, rec).Message)
+				assert.Equal(t, "response is too large (max is 209 bytes)", decodeError(t, rec).Message)
 			})
 		}
 	}
@@ -87,7 +91,7 @@ func TestResponseAtTheCapRuns(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT v FROM t", tenTextRows())
 
-	for name, h := range cappedServers(pg, 100) {
+	for name, h := range cappedServers(pg, tenTextRowsBytes) {
 		t.Run(name, func(t *testing.T) {
 			rec := doSQL(h, `{"query":"SELECT v FROM t"}`, nil)
 
@@ -96,13 +100,41 @@ func TestResponseAtTheCapRuns(t *testing.T) {
 	}
 }
 
+// Rows whose values are all NULL, or that have no columns, still cost their
+// framing; counting values alone let an endless result of them through.
+func TestRowsWithoutValueBytesCountAgainstTheCap(t *testing.T) {
+	for name, result := range map[string]pgfake.Result{
+		"null values": {Cols: []pgfake.Col{{Name: "v", TypeOID: oidText}}, Rows: repeatRow([]any{nil}, 100), Tag: "SELECT 100"},
+		"no columns":  {Rows: repeatRow([]any{}, 100), Tag: "SELECT 100"},
+	} {
+		pg := pgfake.New(t)
+		pg.SetResult("SELECT v FROM t", result)
+		for server, h := range cappedServers(pg, 500) {
+			t.Run(name+"/"+server, func(t *testing.T) {
+				rec := doSQL(h, `{"query":"SELECT v FROM t"}`, nil)
+
+				require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
+				assert.Equal(t, "response is too large (max is 500 bytes)", decodeError(t, rec).Message)
+			})
+		}
+	}
+}
+
+func repeatRow(row []any, n int) [][]any {
+	rows := make([][]any, n)
+	for i := range rows {
+		rows[i] = row
+	}
+	return rows
+}
+
 func TestBatchStatementsShareTheResponseCap(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT v FROM t", tenTextRows())
 	pg.SetResult("SELECT v FROM u", tenTextRows())
 	batch := `{"queries":[{"query":"SELECT v FROM t"},{"query":"SELECT v FROM u"}]}`
 
-	for name, h := range cappedServers(pg, 150) {
+	for name, h := range cappedServers(pg, tenTextRowsBytes*3/2) {
 		for mode, headers := range map[string]map[string]string{
 			"implicit":  nil,
 			"read only": {"Neon-Batch-Read-Only": "true"},
@@ -111,7 +143,7 @@ func TestBatchStatementsShareTheResponseCap(t *testing.T) {
 				rec := doSQL(h, batch, headers)
 
 				require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
-				assert.Equal(t, "response is too large (max is 150 bytes)", decodeError(t, rec).Message)
+				assert.Equal(t, "response is too large (max is 315 bytes)", decodeError(t, rec).Message)
 			})
 		}
 	}
@@ -164,7 +196,7 @@ func TestBatchOverTheCapDoesNotPersistLaterWrites(t *testing.T) {
 	for name, server := range capServers() {
 		for mode, headers := range capBatchModes {
 			t.Run(name+"/"+mode, func(t *testing.T) {
-				pg, h := server(t, 99)
+				pg, h := server(t, tenTextRowsBytes-1)
 
 				rec := doSQL(h, writeAfterSelect, headers)
 
@@ -179,7 +211,7 @@ func TestBatchUnderTheCapCommitsItsWrites(t *testing.T) {
 	for name, server := range capServers() {
 		for mode, headers := range capBatchModes {
 			t.Run(name+"/"+mode, func(t *testing.T) {
-				pg, h := server(t, 100)
+				pg, h := server(t, tenTextRowsBytes)
 
 				rec := doSQL(h, writeAfterSelect, headers)
 

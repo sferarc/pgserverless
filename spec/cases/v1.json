@@ -1079,6 +1079,57 @@
       }
     },
     {
+      "id": "native/float4-infinity-as-string",
+      "level": 2,
+      "spec": "6.2",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'Infinity'::float4 AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"Infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/float4-array-with-non-finite-elements",
+      "level": 2,
+      "spec": "6.2",
+      "note": "The float8 rule element-wise in float4[], which a decoder reads through a different codec.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[1.5,'NaN','Infinity','-Infinity']::float4[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[1.5,\"NaN\",\"Infinity\",\"-Infinity\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
       "id": "native/date-infinity-as-word",
       "level": 2,
       "spec": "6.3",
@@ -1191,6 +1242,81 @@
         },
         "body": {
           "query": "SELECT ARRAY['infinity','-infinity']::timestamptz[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"infinity\",\"-infinity\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamp-negative-infinity-as-word",
+      "level": 2,
+      "spec": "6.3",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '-infinity'::timestamp AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"-infinity\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/date-array-with-infinity",
+      "level": 2,
+      "spec": "6.3",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['infinity','-infinity']::date[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"infinity\",\"-infinity\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamp-array-with-infinity",
+      "level": 2,
+      "spec": "6.3",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['infinity','-infinity']::timestamp[] AS v"
         }
       },
       "expect": {
@@ -1707,6 +1833,443 @@
       }
     },
     {
+      "id": "native/time-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "The decoded form is a count of microseconds. The six digit spelling is the Appendix B.6 question.",
+      "compare": "parses_equal",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '10:30:15.25'::time AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"10:30:15.25\"",
+              "also": ["\"10:30:15.250000\""]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/interval-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "The decoded form is months, days and microseconds. Months and days are kept apart because a month is not a fixed number of days.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '1 year 2 mons 3 days 04:05:06'::interval AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"1 year 2 mons 3 days 04:05:06\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/uuid-array-as-dashed-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11','00000000-0000-0000-0000-000000000000']::uuid[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11\",\"00000000-0000-0000-0000-000000000000\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/xml-array-as-document-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "The second element is quoted and its quotes escaped in the array literal, so splitting the literal on commas is not enough.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['<a>1</a>','<b x=\"1\"/>']::xml[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"<a>1</a>\",\"<b x=\\\"1\\\"/>\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/date-array-as-plain-dates",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['2024-01-01','2024-02-29']::date[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"2024-01-01\",\"2024-02-29\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/time-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "compare": "parses_equal",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['10:30:15.25','23:59:59.999999']::time[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"10:30:15.25\",\"23:59:59.999999\"]",
+              "also": ["[\"10:30:15.250000\",\"23:59:59.999999\"]"]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/interval-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['1 day 02:00:00','-00:00:01.5']::interval[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"1 day 02:00:00\",\"-00:00:01.5\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/macaddr-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['08:00:2b:01:02:03','ff:ff:ff:ff:ff:ff']::macaddr[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"08:00:2b:01:02:03\",\"ff:ff:ff:ff:ff:ff\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/varbit-array-as-strings",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[B'1',B'10101']::varbit[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"1\",\"10101\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/point-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "Each element is quoted in the array literal because it holds a comma.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['(1,2)','(3.5,-4)']::point[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"(1,2)\",\"(3.5,-4)\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/lseg-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['[(1,2),(3,4)]','[(0,0),(1,1)]']::lseg[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"[(1,2),(3,4)]\",\"[(0,0),(1,1)]\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/box-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "box is the one built-in type whose array delimiter is a semicolon, so its literal is {(3,4),(1,2);(1,1),(0,0)}. Splitting on commas yields four wrong elements.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['(3,4),(1,2)','(1,1),(0,0)']::box[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"(3,4),(1,2)\",\"(1,1),(0,0)\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/path-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "An open and a closed path, which differ only in their brackets.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['[(1,2),(3,4)]','((0,0),(1,1),(2,0))']::path[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"[(1,2),(3,4)]\",\"((0,0),(1,1),(2,0))\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/polygon-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['((1,2),(3,4),(5,0))']::polygon[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"((1,2),(3,4),(5,0))\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/line-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "A line's text uses braces, the same characters as the array literal around it.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['{1,2,3}','{0,-1,4}']::line[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"{1,2,3}\",\"{0,-1,4}\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/circle-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['<(1,2),3>','<(0,0),0.5>']::circle[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"<(1,2),3>\",\"<(0,0),0.5>\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/tsvector-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "The second element carries a weight, which a decoder may hold as an ASCII code.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['a:1','b:2A c']::tsvector[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"'a':1\",\"'b':2A 'c'\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
       "id": "native/record-as-text",
       "level": 2,
       "spec": "6.4",
@@ -1829,6 +2392,57 @@
           {
             "v": {
               "json": "\"192.168.1.1/32\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/inet-array-drops-netmask-only-for-hosts",
+      "level": 2,
+      "spec": "6.5",
+      "note": "The 6.5 boundary element-wise, for IPv4 and IPv6.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['192.168.1.1','10.0.0.0/8','::1','2001:db8::/32']::inet[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"192.168.1.1\",\"10.0.0.0/8\",\"::1\",\"2001:db8::/32\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/cidr-array-keeps-netmask",
+      "level": 2,
+      "spec": "6.5",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['10.0.0.0/8','192.168.1.1/32','::1/128']::cidr[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"10.0.0.0/8\",\"192.168.1.1/32\",\"::1/128\"]"
             }
           }
         ]
@@ -2034,6 +2648,234 @@
           {
             "v": {
               "json": "[\"[1,3)\",\"empty\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/numrange-as-literal",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[1.5,2.25)'::numrange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[1.5,2.25)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/daterange-as-canonical-literal",
+      "level": 2,
+      "spec": "6.6",
+      "note": "PostgreSQL stores a discrete range in canonical form, so the inclusive upper bound comes back as the next day, exclusive.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[2024-01-01,2024-01-31]'::daterange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[2024-01-01,2024-02-01)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/tsrange-quotes-bounds-with-spaces",
+      "level": 2,
+      "spec": "6.6",
+      "note": "A timestamp bound holds a space, so it is quoted. Unlike a bare timestamp (Appendix B.2), a range bound is PostgreSQL's spelling.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[2024-01-01 10:00:00,2024-01-02 10:00:00)'::tsrange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[\\\"2024-01-01 10:00:00\\\",\\\"2024-01-02 10:00:00\\\")\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/tstzrange-infinite-bounds",
+      "level": 2,
+      "spec": "6.6",
+      "note": "Infinite bounds, because a finite timestamptz renders in the session TimeZone, which the corpus does not pin. An infinite bound is not an unbounded one: (,) prints no bounds at all.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '[-infinity,infinity)'::tstzrange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"[-infinity,infinity)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/int8multirange-bound-above-2-53",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT int8multirange(int8range(9007199254740993, 9007199254740995)) AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{[9007199254740993,9007199254740995)}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/nummultirange-as-literal",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '{[1.5,2.25),[3,4]}'::nummultirange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{[1.5,2.25),[3,4]}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/datemultirange-as-literal",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '{[2024-01-01,2024-01-31],[2024-03-01,)}'::datemultirange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{[2024-01-01,2024-02-01),[2024-03-01,)}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/tsmultirange-quotes-bounds-with-spaces",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '{[2024-01-01 10:00:00,2024-01-02 10:00:00)}'::tsmultirange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{[\\\"2024-01-01 10:00:00\\\",\\\"2024-01-02 10:00:00\\\")}\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/tstzmultirange-infinite-bounds",
+      "level": 2,
+      "spec": "6.6",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '{[-infinity,infinity)}'::tstzmultirange AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"{[-infinity,infinity)}\""
             }
           }
         ]

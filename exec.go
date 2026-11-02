@@ -246,13 +246,19 @@ func (b *responseBudget) capped() bool {
 	return b != nil && b.max > 0
 }
 
-// add charges one row's values and fails once the response passes the cap.
+// dataRowFraming is a DataRow's bytes before its values: type, length and
+// column count. Each value adds a 4 byte length word on top.
+const dataRowFraming = 1 + 4 + 2
+
+// add charges one row as PostgreSQL framed it and fails once the response
+// passes the cap; counting values alone let NULL or zero-column rows through.
 func (b *responseBudget) add(row [][]byte) error {
 	if !b.capped() {
 		return nil
 	}
+	b.used += dataRowFraming
 	for _, v := range row {
-		b.used += int64(len(v))
+		b.used += 4 + int64(len(v))
 	}
 	if b.used > b.max {
 		return fmt.Errorf("%w (max is %d bytes)", ErrResponseTooLarge, b.max)

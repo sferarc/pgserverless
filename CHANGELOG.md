@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+### Patch Changes
+
+- c51adcd: The conformance corpus checks that a WebSocket upgrade to an unresolvable host, and one that admission refuses, get an HTTP error with a `message` and no 101 (SPEC section 9). `pgsconform` arranges them with the new `-unresolvable-host` and `-refusing-server` flags and reports them skipped without. Before, level 4 had no case for either, so a server that upgraded first and refused afterwards, which the client reports as a network fault, still passed.
+- a4f0358: The conformance corpus checks that a NUL byte in a text parameter is refused with 400 and a SQLSTATE, in native and raw text mode: `22021` when PostgreSQL binds the parameter, as Neon answers, or `08P01` when a server sends it in a simple query. The driver's conformance suite accepts either and fails a server whose error carries no code there. A corpus error expectation can now list accepted codes in `codes`, which `pgsconform` checks.
+- b3973e1: SPEC.md 0.2.0 requires an anonymous `record` in native mode to be emitted as PostgreSQL's record text (`"(1,2)"`) and a `record[]` as an array of those strings, and the conformance corpus checks both. The reference implementation already did this, so its output does not change.
+
 ## 0.6.0
 
 ### Minor Changes
