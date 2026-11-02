@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3
+
+### Patch Changes
+
+- d188bb6: The reference server (`cmd/pgserverless`) with no `PGSERVERLESS_AUTH_TOKEN` now refuses, with 403 before the upgrade, a WebSocket upgrade whose `Origin` is neither its own nor listed in `PGSERVERLESS_CORS_ORIGINS`, and on a loopback listener refuses any request whose `Host` is not `localhost`, a `.localhost` name or a loopback address. Browsers apply no CORS to WebSockets, so any web page could open a tunnel to a local server, and a DNS rebinding name made a page same-origin so CORS never applied to `POST /sql` either. A browser page that uses `Pool` against a tokenless server now needs its origin in `PGSERVERLESS_CORS_ORIGINS`; clients outside a browser send no `Origin` and are unaffected.
+
 ## 0.6.2
 
 ### Patch Changes
