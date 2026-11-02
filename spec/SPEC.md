@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.1.1, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.2.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -227,8 +227,11 @@ Each of these MUST be emitted as the PostgreSQL text representation.
 | `bit`, `varbit` | `{"Bytes":"oA==","Len":3}` | `"101"` |
 | `lseg`, `path`, `box`, `polygon`, `line`, `circle` | an object of decoder field names | `"[(1,2),(3,4)]"` and so on |
 | `tsvector` | nested objects with weights as ASCII codes | `"'a':1"` |
+| `record` | `[1,2]`, an array of its fields | `"(1,2)"` |
 
 `point` is worth calling out as the exception that needs nothing in at least one decoder, so implementers should check rather than assume.
+
+`record` is the anonymous composite that `ROW(...)` produces. A decoder that turns it into a list of its fields makes it look like an array, which is wrong twice over: the client cannot tell it from an array column, and each field arrives in the decoder's spelling rather than PostgreSQL's (a `bytea` field as base64, a nested record as another list). The required output is the whole value as PostgreSQL's record text, each field spelled and quoted as PostgreSQL prints it, so `ROW(1,'a b')` is `"(1,\"a b\")"`.
 
 Applies element-wise inside the array forms. A decoder with no array codec for one of them, as pgx has none for `macaddr8[]`, hands back the array literal as one string; it MUST still be emitted as an array of strings.
 
@@ -258,7 +261,7 @@ The naive output is both unreadable and lossy: an `int8range` bound above 2^53 e
 
 Many decoders flatten. Nothing in the flattened response says a dimension was lost, so a client reading `rows[0].a[1]` gets element 2 where the column holds `[3,4]`. Since the parameter path in 4.4 accepts `{{1,2},{3,4}}`, without this rule a nested array can be written and cannot be read back in the shape it was written.
 
-Implementations reading dimensions from PostgreSQL's binary array header MUST confirm the value really is an array of that column's type before reshaping. A composite (`row(...)`) decodes to a list too, and its binary layout parses as a plausible array header, so a naive check re-nests records into nonsense. Confirm using the column's type, and check that the dimensions account for exactly the elements present.
+Implementations reading dimensions from PostgreSQL's binary array header MUST confirm the value really is an array of that column's type before reshaping. A composite (`row(...)`) decodes to a list too, and its binary layout parses as a plausible array header, so a naive check re-nests records into nonsense (a record is emitted as its text, 6.4). Confirm using the column's type, and check that the dimensions account for exactly the elements present.
 
 ### 6.8 Order of operations
 

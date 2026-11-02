@@ -2,6 +2,10 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.2.0 (draft)
+
+- Section 6.4 requires an anonymous `record` to be emitted as PostgreSQL's record text, `"(1,2)"`, and a `record[]` as an array of those strings. Section 6.7 only said a composite must not be re-nested, so a server returning the fields as the JSON array `[1,2]` conformed to 0.1.1 and does not conform to this version. The corpus checks both.
+
 ## 0.1.1 (draft)
 
 - Appendix B items 4 and 6 state only what is still open. Item 4 said the reference implementation sets no size limit of its own; it refuses a request body over 10 MiB with 413, and its server refuses with 507 a response whose row values pass 10 MiB. Item 6 said its `time`, `interval` and `tsvector` spellings differ from PostgreSQL's; they now match.

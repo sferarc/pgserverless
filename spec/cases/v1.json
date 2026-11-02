@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.1.1",
+  "spec_version": "0.2.0",
   "version": 1,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -1701,6 +1701,57 @@
           {
             "v": {
               "json": "\"'a':1\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/record-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "A decoder that turns a record into a list of its fields returns [1,2], which a client cannot tell from an int4[] column.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ROW(1,2)::record AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"(1,2)\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/record-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY[ROW(1,2),ROW(3,4)] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"(1,2)\",\"(3,4)\"]"
             }
           }
         ]
