@@ -196,9 +196,17 @@
           "type": "object",
           "additionalProperties": false,
           "description": "For an error response. Only the members present are compared. Field names are the client's, per SPEC.md 7.1.",
+          "not": { "required": ["code", "codes"] },
           "properties": {
             "message_contains": { "type": "string" },
             "code": { "type": "string" },
+            "codes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 2,
+              "uniqueItems": true,
+              "description": "SQLSTATEs any one of which passes, for a refusal whose code depends on how the server reaches PostgreSQL. Not used together with code."
+            },
             "severity": { "type": "string" },
             "has_fields": {
               "type": "array",

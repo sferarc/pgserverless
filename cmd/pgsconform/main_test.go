@@ -135,3 +135,42 @@ func TestCheckResults(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckErrorCodes(t *testing.T) {
+	exp := &expectedError{Codes: []string{"22021", "08P01"}}
+	tests := []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"first", `{"code":"22021"}`, true},
+		{"second", `{"code":"08P01"}`, true},
+		{"other", `{"code":"XX000"}`, false},
+		{"missing", `{"message":"bad"}`, false},
+		{"null", `{"code":null}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if msg := checkError(exp, []byte(tt.body)); (msg == "") != tt.ok {
+				t.Fatalf("checkError(%s) = %q, want ok=%v", tt.body, msg, tt.ok)
+			}
+		})
+	}
+}
+
+func TestLoadCorpusRejectsAmbiguousErrorCodes(t *testing.T) {
+	for _, e := range []string{
+		`{"code":"22021","codes":["22021","08P01"]}`,
+		`{"codes":["22021"]}`,
+		`{"codes":[]}`,
+	} {
+		path := filepath.Join(t.TempDir(), "c.json")
+		body := `{"spec_version":"0.1.0","version":1,"cases":[{"id":"x","expect":{"error":` + e + `}}]}`
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCorpus(path); err == nil {
+			t.Fatalf("want an error for %s", e)
+		}
+	}
+}

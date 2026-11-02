@@ -58,6 +58,8 @@ Four things about that shape are deliberate.
 
 **A case may declare tolerance.** Appendix B of the spec lists spellings that differ by decoder and are not settled. Those cases carry `"compare": "parses_equal"` instead of an exact match and list the alternative spellings they accept in `also`, and the report says how many cases were compared loosely.
 
+An error case can be tolerant the same way. Where the SQLSTATE depends on how a server reaches PostgreSQL, the case lists the codes it accepts in `error.codes` instead of naming one in `error.code`.
+
 ## 4. Fixtures and the database
 
 Cases reference a fixture by name. A fixture is a SQL file that creates and populates its tables, and it MUST be idempotent, since the practical way to run this is against a scratch database that several runs share.

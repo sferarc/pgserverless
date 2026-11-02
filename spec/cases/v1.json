@@ -489,6 +489,36 @@
       }
     },
     {
+      "id": "errors/nul-byte-in-text-param-is-400-with-its-code",
+      "level": 1,
+      "spec": "7.2",
+      "note": "PostgreSQL text cannot hold U+0000. Bound as a parameter it is refused with 22021, the code Neon answers; interpolated into a simple query PostgreSQL refuses the message with 08P01. The client accepts either, and an error without a SQLSTATE fails it.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": false },
+        "body": { "query": "SELECT $1::text AS v", "params": ["a\u0000b"] }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "codes": ["22021", "08P01"], "severity": "ERROR" }
+      }
+    },
+    {
+      "id": "errors/nul-byte-in-text-param-is-400-with-its-code-raw-text",
+      "level": 1,
+      "spec": "7.2",
+      "note": "The same refusal in raw text mode, which a server may run on the simple query protocol (5.3) and so answer 08P01 rather than 22021.",
+      "request": {
+        "path": "/sql",
+        "headers": { "array_mode": true, "raw_text": true },
+        "body": { "query": "SELECT $1::text AS v", "params": ["a\u0000b"] }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "codes": ["22021", "08P01"], "severity": "ERROR" }
+      }
+    },
+    {
       "id": "batch/read-only-rejects-a-write",
       "level": 3,
       "spec": "8",

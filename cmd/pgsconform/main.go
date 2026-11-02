@@ -189,6 +189,7 @@ type expectedField struct {
 
 type expectedError struct {
 	Code      string   `json:"code"`
+	Codes     []string `json:"codes"`
 	Severity  string   `json:"severity"`
 	HasFields []string `json:"has_fields"`
 }
@@ -220,6 +221,9 @@ func loadCorpus(path string) (*corpus, error) {
 	for _, k := range c.Cases {
 		if k.Compare != "parses_equal" && listsAlternatives(k.Expect) {
 			return nil, fmt.Errorf("case %s lists `also` alternatives but is not compare: parses_equal", k.ID)
+		}
+		if err := checkErrorCodes(k); err != nil {
+			return nil, err
 		}
 	}
 	return &c, nil
@@ -464,6 +468,11 @@ func checkError(exp *expectedError, body []byte) string {
 			return fmt.Sprintf("error.code: want %q, got %q", exp.Code, got["code"])
 		}
 	}
+	if len(exp.Codes) > 0 {
+		if s, _ := got["code"].(string); !slices.Contains(exp.Codes, s) {
+			return fmt.Sprintf("error.code: want one of %q, got %q", exp.Codes, got["code"])
+		}
+	}
 	if exp.Severity != "" {
 		if s, _ := got["severity"].(string); s != exp.Severity {
 			return fmt.Sprintf("error.severity: want %q, got %q", exp.Severity, got["severity"])
@@ -608,6 +617,24 @@ func checkRows(expRaw, gotRaw json.RawMessage, loose bool) string {
 		}
 	}
 	return ""
+}
+
+// checkErrorCodes refuses `code` with `codes`, and a `codes` list naming one code.
+func checkErrorCodes(k kase) error {
+	var exp expectation
+	if err := json.Unmarshal(k.Expect, &exp); err != nil {
+		return fmt.Errorf("case %s: expect: %w", k.ID, err)
+	}
+	if exp.Error == nil {
+		return nil
+	}
+	if exp.Error.Code != "" && len(exp.Error.Codes) > 0 {
+		return fmt.Errorf("case %s sets both error.code and error.codes", k.ID)
+	}
+	if exp.Error.Codes != nil && len(exp.Error.Codes) < 2 {
+		return fmt.Errorf("case %s lists fewer than two error.codes; use error.code for one", k.ID)
+	}
+	return nil
 }
 
 // listsAlternatives reports whether any wrapper in the expectation carries
