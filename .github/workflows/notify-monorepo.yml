@@ -50,10 +50,11 @@ jobs:
     # The trailer below is written by sync-mirrors.yml onto every commit it
     # makes, so it identifies a sync commit exactly, which an actor check could
     # not. A contribution merged by a person carries no such trailer and is
-    # dispatched normally.
+    # dispatched normally. A release job writes `Mirror-Sync: release` instead.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      !contains(github.event.head_commit.message, 'Synced from https://github.com/sferarc/pgbeam/commit/')
+      (!contains(github.event.head_commit.message, 'Synced from https://github.com/sferarc/pgbeam/commit/') &&
+      !contains(github.event.head_commit.message, 'Mirror-Sync: release'))
     steps:
       - name: Dispatch to monorepo
         env:

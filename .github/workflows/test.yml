@@ -1,3 +1,4 @@
+# Installed by hand as .github/workflows/test.yml in sferarc/pgserverless; the forward sync never writes .github.
 name: Test
 
 on:
@@ -30,4 +31,8 @@ jobs:
       - run: go mod verify
       - run: go vet ./...
       - run: go test -race ./...
+      - name: go test through NewHTTPHandler
+        env:
+          PGSERVERLESS_TEST_STDLIB: "true"
+        run: go test -race .
       - run: go build -o /dev/null ./cmd/pgserverless
