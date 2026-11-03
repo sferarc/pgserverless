@@ -70,6 +70,8 @@ func TestFormatPgArrayElem(t *testing.T) {
 		{"bool", true, "true"},
 		{"keyword", "Null", `"Null"`},
 		{"empty", "", `""`},
+		{"newline kept raw", "a\nb", "\"a\nb\""},
+		{"control character kept raw", "c\x01d", "c\x01d"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, formatPgArrayElem(tc.in))

@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.4.0",
+  "spec_version": "0.4.1",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -3355,6 +3355,36 @@
               "json": "\"{\\\"\\\",\\\"a,b\\\",\\\"say \\\\\\\"hi\\\\\\\"\\\",\\\"back\\\\\\\\slash\\\",\\\"{x}\\\",\\\" padded \\\",\\\"tab\\there\\\"}\""
             }
           }
+        ]
+      }
+    },
+    {
+      "id": "params/control-character-in-text-array-element",
+      "level": 1,
+      "spec": "4.4",
+      "note": "A control character inside an element is written as itself, not as a JSON escape: Neon's proxy writes \\n, which PostgreSQL reads as n, so the element would come back as anb (Appendix C.1).",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT ($1::text[])[1] AS nl, ($1::text[])[2] AS soh",
+          "params": [["a\nb", "c\u0001d"]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          [
+            {
+              "json": "\"a\\nb\""
+            },
+            {
+              "json": "\"c\\u0001d\""
+            }
+          ]
         ]
       }
     },

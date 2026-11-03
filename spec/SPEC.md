@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.4.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.4.1, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -120,7 +120,7 @@ Parameters arrive as JSON, which cannot express every PostgreSQL type, so a serv
 
 **A JSON array parameter MUST be rendered as a PostgreSQL array literal**, and each element MUST be rendered so PostgreSQL reads back the value the client sent. The failure mode is silent: a JSON number is a double, and rendering `float64(1000000)` with a general-purpose formatter yields `1e+06`, which `int[]` and `int8[]` reject with SQLSTATE 22P02. Use a non-exponential decimal format. A nested JSON array MUST render as a nested array literal (`{{1,2},{3,4}}`).
 
-**An element MUST be quoted whenever the bare text would read back as a different value**: when it is empty, when it case-insensitively equals `NULL`, or when it contains any of `{`, `}`, `,`, `"`, `\` or whitespace. Quoting escapes `"` and `\` with a backslash.
+**An element MUST be quoted whenever the bare text would read back as a different value**: when it is empty, when it case-insensitively equals `NULL`, or when it contains any of `{`, `}`, `,`, `"`, `\` or whitespace. Quoting escapes `"` and `\` with a backslash and nothing else: a newline, a tab or any other control character is written as the character itself. PostgreSQL's array parser reads a backslash as escaping the next character, so a JSON escape such as `\n` inside an element arrives as the letter `n`. Neon's proxy writes such escapes (Appendix C.1); a server MUST NOT.
 
 **A JSON array is rendered as an array literal whatever type the parameter has**, and the server MUST NOT choose another rendering from the type. The parameter's own input function then reads the literal: `text` receives it as is (`[1,"a b",null]` binds as `{1,"a b",NULL}`), and a scalar type such as `int4` rejects it with SQLSTATE 22P02, as do `json` and `jsonb`, since an array literal is not JSON. A client that wants a JSON array in a `json` or `jsonb` parameter sends it as a string. This is what Neon's proxy does.
 
@@ -415,3 +415,11 @@ These could not be settled from either source and MUST NOT be guessed by an impl
 4. **Maximum request and response sizes.** Sections 4.3 and 7.2 let a server refuse an oversized batch, request body or response, and give the status for each, but no limit is specified and no size every server must accept. The reference implementation refuses a batch over 100 statements and a request body over 10 MiB, and its server refuses a response whose row values pass 10 MiB. Whether conformance should set a floor a client can rely on is undecided.
 5. **`format` in the field descriptor.** Settled in 0.4.0: always `"text"`, as Neon's proxy writes it. Section 5.2 states the requirement.
 6. **Text spellings that differ by decoder.** PostgreSQL prints a `time` with whole seconds without fractional digits, an `interval` of whole days without a time part, and doubles a single quote inside a `tsvector` lexeme. The reference implementation spells all three as PostgreSQL does, but a server whose decoder prints `10:00:00.000000`, `1 day 00:00:00` or a backslash escaped quote sends values that parse back to the same thing. Whether conformance should require PostgreSQL's exact spelling is undecided, and the corpus marks these as tolerant comparisons.
+
+## Appendix C: known divergences in Neon's proxy
+
+Behaviour of Neon's proxy that this document does not adopt. A server copying any of these fails the corpus cases named.
+
+### C.1 String array elements are JSON-escaped
+
+Neon's proxy renders a string element of a JSON array parameter as a JSON string, its quotes and escapes included, and joins those into the array literal. `"` and `\` survive, because JSON and the array literal escape them the same way, but a control character arrives as its JSON escape: `["a\nb"]` binds as `{"a\nb"}`, with a backslash and an `n`, which PostgreSQL reads as `anb`; a tab arrives as `t` and U+0001 as `u0001` the same way. Section 4.4 requires the element to read back as sent, so a conforming server writes the character itself. The client converts array parameters to array literals before it sends them, so only clients that send a JSON array meet the difference. `params/array-element-quoting-text` (its tab) and `params/control-character-in-text-array-element` check it.

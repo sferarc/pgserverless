@@ -2,6 +2,11 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.4.1 (draft)
+
+- Section 4.4 says quoting an array element escapes only `"` and `\`, so a control character is written as itself. The rule that an element reads back as sent already required this.
+- Appendix C is new and lists behaviour of Neon's proxy this document does not adopt. C.1 is its JSON escaping of string array elements, which turns a newline into the letter `n`. The corpus checks it in `params/control-character-in-text-array-element`, and its `version` stays 2.
+
 ## 0.4.0 (draft)
 
 - Section 5.1 requires an object-mode row to carry one member per column in column order, a repeated name included, which is what Neon's proxy writes. This settles Appendix B item 1. A client parsing the row sees the last column with the name. The corpus checks it in `core/duplicate-columns-in-object-mode`.
