@@ -217,6 +217,9 @@ func dial(ctx context.Context, up Upstream, mode pgx.QueryExecMode) (*pgx.Conn, 
 	if err != nil {
 		return nil, err
 	}
+	if t := copyTripFrom(ctx); t != nil {
+		cfg.BuildFrontend = t.frontend
+	}
 	return pgx.ConnectConfig(ctx, cfg)
 }
 
@@ -352,6 +355,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 
 	queryCtx, cancel := context.WithTimeout(r.Context(), QueryTimeout)
 	defer cancel()
+	queryCtx = withCopyTrip(queryCtx)
 
 	// Raw-text mode runs like Neon's text query: the extended protocol with
 	// untyped text parameters and text results, one statement per query. The

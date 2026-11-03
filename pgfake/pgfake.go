@@ -92,6 +92,9 @@ type Result struct {
 	Requires string
 	// NeedsTxnBlock fails the statement with 25P01 outside a BEGIN, as LOCK TABLE, SAVEPOINT and DECLARE CURSOR do in a pipeline.
 	NeedsTxnBlock bool
+	// CopyIn answers CopyInResponse and holds like COPY FROM STDIN waiting for data; CopyOut streams Rows as COPY TO STDOUT does.
+	CopyIn  bool
+	CopyOut bool
 }
 
 // Col describes one result column.
@@ -604,6 +607,20 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 	}
 	if res.WaitForCancel {
 		holdUntilCancelled(be, s)
+		return
+	}
+	if res.CopyIn {
+		be.Send(&pgproto3.CopyInResponse{ColumnFormatCodes: make([]uint16, len(res.Cols))})
+		holdUntilCancelled(be, s)
+		return
+	}
+	if res.CopyOut {
+		be.Send(&pgproto3.CopyOutResponse{ColumnFormatCodes: make([]uint16, len(res.Cols))})
+		for range res.Rows {
+			be.Send(&pgproto3.CopyData{Data: []byte("row\n")})
+		}
+		be.Send(&pgproto3.CopyDone{})
+		be.Send(&pgproto3.CommandComplete{CommandTag: []byte("COPY " + itoa(len(res.Rows)))})
 		return
 	}
 	if res.Delay > 0 {

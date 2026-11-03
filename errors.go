@@ -62,7 +62,9 @@ func HandleDialError(c echo.Context, err error) error {
 
 // writeQueryError is writePgError for a statement run under ctx, which answers as Neon does once ctx has ended.
 func writeQueryError(ctx context.Context, w http.ResponseWriter, err error) {
-	if ctx.Err() != nil {
+	if copyTripFrom(ctx).hit() {
+		err = ErrCopyUnsupported
+	} else if ctx.Err() != nil {
 		err = fmt.Errorf("%w: %w", ErrQueryCancelled, err)
 	}
 	writePgError(w, err)
@@ -77,6 +79,11 @@ func errorResponse(err error, dialing bool) (int, ErrorResponse) {
 	if errors.Is(err, ErrQueryCancelled) {
 		code := "08P01"
 		return http.StatusBadRequest, ErrorResponse{Message: queryCancelledMessage, Code: &code}
+	}
+	if errors.Is(err, ErrCopyUnsupported) {
+		// Neon answers 400 "unexpected message from server" with no code; 0A000 tells the client why.
+		code := "0A000"
+		return http.StatusBadRequest, ErrorResponse{Message: ErrCopyUnsupported.Error(), Code: &code}
 	}
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		status := http.StatusBadRequest
