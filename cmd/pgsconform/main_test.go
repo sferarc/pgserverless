@@ -184,6 +184,50 @@ func TestCheckErrorCodes(t *testing.T) {
 	}
 }
 
+func TestCheckErrorMessageContains(t *testing.T) {
+	exp := &expectedError{MessageContains: "Read-Only"}
+	tests := []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"contains", `{"message":"invalid Batch-Read-Only value"}`, true},
+		{"other message", `{"message":"bad request"}`, false},
+		{"case differs", `{"message":"invalid batch-read-only value"}`, false},
+		{"only in another field", `{"message":"bad","detail":"Read-Only"}`, false},
+		{"missing", `{"code":"08P01"}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if msg := checkError(exp, []byte(tt.body)); (msg == "") != tt.ok {
+				t.Fatalf("checkError(%s) = %q, want ok=%v", tt.body, msg, tt.ok)
+			}
+		})
+	}
+}
+
+func TestCheckErrorMustNotContain(t *testing.T) {
+	exp := &expectedError{MustNotContain: []string{"s3cret", "user@db"}}
+	tests := []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"clean", `{"message":"connection refused"}`, true},
+		{"in message", `{"message":"cannot reach postgres://u:s3cret@db"}`, false},
+		{"in another field", `{"message":"bad","detail":"user@db"}`, false},
+		{"json escaped", `{"message":"cannot reach user\u0040db"}`, false},
+		{"in a key", `{"message":"bad","s3cret":1}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if msg := checkError(exp, []byte(tt.body)); (msg == "") != tt.ok {
+				t.Fatalf("checkError(%s) = %q, want ok=%v", tt.body, msg, tt.ok)
+			}
+		})
+	}
+}
+
 func TestLoadCorpusRejectsAmbiguousErrorCodes(t *testing.T) {
 	for _, e := range []string{
 		`{"code":"22021","codes":["22021","08P01"]}`,

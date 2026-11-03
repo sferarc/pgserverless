@@ -60,6 +60,8 @@ Four things about that shape are deliberate.
 
 An error case can be tolerant the same way. Where the SQLSTATE depends on how a server reaches PostgreSQL, the case lists the codes it accepts in `error.codes` instead of naming one in `error.code`.
 
+An error case may also check the text. `error.message_contains` must appear in the error's `message`, compared case-sensitively, and each string in `error.must_not_contain` must appear nowhere in the response body, read both as sent and with its JSON strings decoded. That second check is how a case shows a connection string is not leaked in an error (spec section 7.3).
+
 A case may bound the time to answer. Where the spec requires a refusal at once, the case carries `answered_within_ms`, and the harness fails it when the full response has not arrived by then. A server that waits for its own request timeout and then answers with the right status still fails.
 
 ## 4. Fixtures and the database

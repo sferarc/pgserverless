@@ -176,10 +176,12 @@ type expectedField struct {
 }
 
 type expectedError struct {
-	Code      string   `json:"code"`
-	Codes     []string `json:"codes"`
-	Severity  string   `json:"severity"`
-	HasFields []string `json:"has_fields"`
+	MessageContains string   `json:"message_contains"`
+	Code            string   `json:"code"`
+	Codes           []string `json:"codes"`
+	Severity        string   `json:"severity"`
+	HasFields       []string `json:"has_fields"`
+	MustNotContain  []string `json:"must_not_contain"`
 }
 
 type expectedWSocket struct {
@@ -534,9 +536,17 @@ func checkStatus(exp expectation, got int) string {
 }
 
 func checkError(exp *expectedError, body []byte) string {
+	if p := checkLeaks(exp.MustNotContain, body); p != "" {
+		return p
+	}
 	var got map[string]any
 	if err := json.Unmarshal(body, &got); err != nil {
 		return fmt.Sprintf("error body is not JSON: %v%s", err, bodyHint(body))
+	}
+	if exp.MessageContains != "" {
+		if s, _ := got["message"].(string); !strings.Contains(s, exp.MessageContains) {
+			return fmt.Sprintf("error.message: want it to contain %q, got %q", exp.MessageContains, got["message"])
+		}
 	}
 	if exp.Code != "" {
 		if s, _ := got["code"].(string); s != exp.Code {
@@ -564,6 +574,42 @@ func checkError(exp *expectedError, body []byte) string {
 			strings.Join(missing, ", "), strings.Join(keysOf(got), ", "))
 	}
 	return ""
+}
+
+// checkLeaks searches the raw body and every decoded JSON string, so an escaped leak is still found.
+func checkLeaks(forbidden []string, body []byte) string {
+	if len(forbidden) == 0 {
+		return ""
+	}
+	texts := []string{string(body)}
+	var v any
+	if json.Unmarshal(body, &v) == nil {
+		texts = appendStrings(texts, v)
+	}
+	for _, f := range forbidden {
+		for _, t := range texts {
+			if strings.Contains(t, f) {
+				return fmt.Sprintf("error response contains %q, which must not appear in it", f)
+			}
+		}
+	}
+	return ""
+}
+
+func appendStrings(out []string, v any) []string {
+	switch v := v.(type) {
+	case string:
+		out = append(out, v)
+	case []any:
+		for _, e := range v {
+			out = appendStrings(out, e)
+		}
+	case map[string]any:
+		for k, e := range v {
+			out = appendStrings(append(out, k), e)
+		}
+	}
+	return out
 }
 
 func checkResult(exp expectation, got map[string]json.RawMessage, loose bool) string {

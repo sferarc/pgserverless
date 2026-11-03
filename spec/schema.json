@@ -204,7 +204,10 @@
           "description": "For an error response. Only the members present are compared. Field names are the client's, per SPEC.md 7.1.",
           "not": { "required": ["code", "codes"] },
           "properties": {
-            "message_contains": { "type": "string" },
+            "message_contains": {
+              "type": "string",
+              "description": "A substring the error's message must contain, compared case-sensitively."
+            },
             "code": { "type": "string" },
             "codes": {
               "type": "array",
