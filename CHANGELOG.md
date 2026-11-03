@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+
+### Minor Changes
+
+- 4994f3e: Native mode (no `Neon-Raw-Text-Output`) now returns `timestamp` and `timestamptz` as PostgreSQL prints them, which is what Neon's proxy returns: `"2024-01-01 10:00:00"` and `"2024-01-01 10:00:00+00"`, where it returned RFC 3339 (`"2024-01-01T10:00:00Z"`). Years outside 0 to 9999 follow PostgreSQL too (`"0044-03-15 12:00:00 BC"`, `"10000-01-01 00:00:00"`) instead of the ISO 8601 expanded form. Array elements and record fields are spelled the same way. A client that parses these columns with JavaScript's `Date` or an RFC 3339 parser needs to accept the space separated form. Raw text mode, which `@neondatabase/serverless` uses, is unchanged. SPEC.md 0.3.0 settles Appendix B item 2 this way, and the corpus (`version` 2) checks it.
+
 ## 0.6.3
 
 ### Patch Changes
