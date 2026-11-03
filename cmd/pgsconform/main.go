@@ -131,6 +131,13 @@ type kase struct {
 	Compare  string          `json:"compare"`
 	Request  requestSpec     `json:"request"`
 	Expect   json.RawMessage `json:"expect"`
+	Then     *followUp       `json:"then"`
+}
+
+// followUp is a second POST /sql sent once the case's own request passed, to observe what that request left behind.
+type followUp struct {
+	Request requestSpec     `json:"request"`
+	Expect  json.RawMessage `json:"expect"`
 }
 
 type requestSpec struct {
@@ -213,6 +220,15 @@ func loadCorpus(path string) (*corpus, error) {
 			return nil, fmt.Errorf("case %s lists `also` alternatives but is not compare: parses_equal", k.ID)
 		}
 		if err := checkErrorCodes(k); err != nil {
+			return nil, err
+		}
+		if k.Then == nil {
+			continue
+		}
+		if k.Request.Method == http.MethodGet || k.Then.Request.Method == http.MethodGet {
+			return nil, fmt.Errorf("case %s: then follows a POST /sql with a POST /sql, never a WebSocket upgrade", k.ID)
+		}
+		if err := checkErrorCodes(kase{ID: k.ID + " then", Expect: k.Then.Expect}); err != nil {
 			return nil, err
 		}
 	}
@@ -303,7 +319,20 @@ func (r *runner) runCase(ctx context.Context, c kase) (outcome, string) {
 	if why != "" {
 		return outcomeSkip, why
 	}
-	return r.runHTTP(ctx, c, exp, t)
+	o, detail := r.runHTTP(ctx, c, exp, t)
+	if o != outcomePass || c.Then == nil {
+		return o, detail
+	}
+	var then expectation
+	if err := json.Unmarshal(c.Then.Expect, &then); err != nil {
+		return outcomeFail, fmt.Sprintf("corpus case is malformed: then: %v", err)
+	}
+	next := c
+	next.Request = c.Then.Request
+	if o, detail := r.runHTTP(ctx, next, then, t); o != outcomePass {
+		return o, "then: " + detail
+	}
+	return outcomePass, ""
 }
 
 func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation, t target) (outcome, string) {

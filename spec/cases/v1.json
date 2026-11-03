@@ -4435,6 +4435,52 @@
         "answered_within_ms": 5000,
         "error": {}
       }
+    },
+    {
+      "id": "batch/copy-in-a-batch-persists-nothing",
+      "level": 3,
+      "spec": "7.2",
+      "fixture": "constrained",
+      "note": "The COPY aborts the batch's transaction, so the write before it does not persist. A server that commits each statement on its own still answers 400 at once, and the follow-up request sees its row.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "INSERT INTO cf_constrained (id, email) VALUES (4, 'd@example.com')"
+            },
+            {
+              "query": "COPY cf_constrained (id, email) FROM STDIN"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "answered_within_ms": 5000,
+        "error": {}
+      },
+      "then": {
+        "request": {
+          "path": "/sql",
+          "headers": {
+            "array_mode": true,
+            "raw_text": true
+          },
+          "body": {
+            "query": "SELECT id FROM cf_constrained WHERE id = 4"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "row_count": 0,
+          "rows": []
+        }
+      }
     }
   ]
 }

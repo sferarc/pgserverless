@@ -64,6 +64,8 @@ An error case may also check the text. `error.message_contains` must appear in t
 
 A case may bound the time to answer. Where the spec requires a refusal at once, the case carries `answered_within_ms`, and the harness fails it when the full response has not arrived by then. A server that waits for its own request timeout and then answers with the right status still fails.
 
+A case may check what its request left behind. `then` holds a second request and its own `expect`, which the harness sends to the same server once the first request has met its expectation, and the case passes only when both do. That is how a case shows a failed batch persisted nothing (spec sections 7.2 and 8), which no single response can show.
+
 ## 4. Fixtures and the database
 
 Cases reference a fixture by name. A fixture is a SQL file that creates and populates its tables, and it MUST be idempotent, since the practical way to run this is against a scratch database that several runs share.

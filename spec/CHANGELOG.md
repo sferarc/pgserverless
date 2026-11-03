@@ -6,6 +6,7 @@ Versions of [SPEC.md](SPEC.md). These are independent of the Go module's release
 
 - Section 7.2 requires a statement that starts a COPY to or from the client (`COPY ... FROM STDIN`, `COPY ... TO STDOUT`) to be answered 400 at once, never by waiting for the request timeout and never by a 200 with the copied rows dropped, and recommends `code` `0A000`, which Neon's proxy does not send. A server that forwarded the copy response unhandled conformed to 0.4.1 and does not conform to this version, the reference implementation included before its 0.7.2 release.
 - A corpus case may carry `answered_within_ms`, and the harness fails the case when the server has not answered by then. Three cases use it: `errors/copy-to-stdout-is-400-at-once` and `errors/copy-from-stdin-is-400-at-once` at level 1, and `batch/copy-in-a-batch-is-400-at-once` at level 3. The corpus `version` stays 2, since no existing case's expectation changed.
+- A corpus case may carry `then`, a follow-up request with its own expectation that the harness sends once the case's request passed. `batch/copy-in-a-batch-persists-nothing` at level 3 uses it to check that a write before a refused COPY in a batch does not persist. The corpus `version` stays 2, since the case is new.
 
 ## 0.4.1 (draft)
 

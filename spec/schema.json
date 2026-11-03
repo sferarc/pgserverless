@@ -79,7 +79,17 @@
           "description": "exact compares the serialized JSON. parses_equal is for the spellings SPEC.md Appendix B leaves unsettled: the harness parses both sides as JSON and also accepts the alternative spellings a value lists in `also`. A report counts these separately."
         },
         "request": { "$ref": "#/$defs/request" },
-        "expect": { "$ref": "#/$defs/expect" }
+        "expect": { "$ref": "#/$defs/expect" },
+        "then": {
+          "type": "object",
+          "required": ["request", "expect"],
+          "additionalProperties": false,
+          "description": "A second POST /sql the harness sends to the same server once the case's own request meets `expect`, to observe what that request left behind, such as a row a failed batch must not persist. The case passes only when this one meets its own `expect` too. Not allowed on a WebSocket case.",
+          "properties": {
+            "request": { "$ref": "#/$defs/request" },
+            "expect": { "$ref": "#/$defs/expect" }
+          }
+        }
       }
     },
     "request": {

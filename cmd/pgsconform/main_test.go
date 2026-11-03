@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -275,5 +276,59 @@ func TestAnsweredWithinFailsALateAnswer(t *testing.T) {
 				t.Fatalf("runHTTP = %v %q, want ok=%v", got, detail, tt.ok)
 			}
 		})
+	}
+}
+
+// A batch refused for COPY must fail its case when the follow-up request still sees the batch's write.
+func TestThenObservesWhatTheRequestLeftBehind(t *testing.T) {
+	tests := []struct {
+		name      string
+		committed bool
+		ok        bool
+	}{
+		{"rolled back", false, true},
+		{"committed", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				if strings.Contains(string(body), "queries") {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"message":"refused"}`))
+					return
+				}
+				result := `{"command":"SELECT","rowCount":0,"rows":[]}`
+				if tt.committed {
+					result = `{"command":"SELECT","rowCount":1,"rows":[["4"]]}`
+				}
+				_, _ = w.Write([]byte(result))
+			}))
+			defer srv.Close()
+			c := kase{
+				ID:      "x",
+				Request: requestSpec{Path: "/sql", Body: json.RawMessage(`{"queries":[{"query":"INSERT"},{"query":"COPY"}]}`)},
+				Expect:  json.RawMessage(`{"status":400,"error":{}}`),
+				Then: &followUp{
+					Request: requestSpec{Path: "/sql", Body: json.RawMessage(`{"query":"SELECT"}`)},
+					Expect:  json.RawMessage(`{"status":200,"row_count":0,"rows":[]}`),
+				},
+			}
+			got, detail := (&runner{server: srv.URL}).runCase(context.Background(), c)
+			if (got == outcomePass) != tt.ok || (!tt.ok && !strings.HasPrefix(detail, "then: ")) {
+				t.Fatalf("runCase = %v %q, want ok=%v", got, detail, tt.ok)
+			}
+		})
+	}
+}
+
+func TestLoadCorpusRefusesThenOnAWebSocketCase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.json")
+	body := `{"spec_version":"0.5.0","version":2,"cases":[{"id":"x","request":{"path":"/v2","method":"GET"},"expect":{"status":101},"then":{"request":{"path":"/sql"},"expect":{"status":200}}}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCorpus(path); err == nil || !strings.Contains(err.Error(), "then") {
+		t.Fatalf("loadCorpus = %v, want a then error", err)
 	}
 }
