@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.5
+
+### Patch Changes
+
+- 2d34324: A conformance corpus case may now carry `then`, a follow-up `POST /sql` that `pgsconform` sends once the case's own request passed, and the case passes only when both meet their expectations. The new level 3 case `batch/copy-in-a-batch-persists-nothing` uses it to check that an INSERT before a refused COPY in a batch does not persist, which SPEC section 7.2 requires and a single response cannot show. The reference implementation already passes it, since the refused COPY drops the connection and PostgreSQL rolls the batch back.
+
 ## 0.7.4
 
 ### Patch Changes
