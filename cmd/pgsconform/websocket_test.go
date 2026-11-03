@@ -124,3 +124,44 @@ func corpusCase(t *testing.T, id string) kase {
 	t.Fatalf("corpus has no case %s", id)
 	return kase{}
 }
+
+// A single-database server cannot have an unresolvable host, so -single-database reports the case not applicable, while a server given one still has to refuse it.
+func TestUnresolvableHostCaseUnderSingleDatabase(t *testing.T) {
+	srv := httptest.NewServer(scriptedServer(t, nil))
+	defer srv.Close()
+	k := kase{ID: "x", Level: 4, Requires: "unresolvable_host", Request: requestSpec{Path: "/v2", Method: http.MethodGet}, Expect: []byte(`{"status_class":"error","websocket":{"upgraded":false}}`)}
+
+	tests := []struct {
+		name string
+		r    *runner
+		want outcome
+	}{
+		{"single database", &runner{server: srv.URL, singleDatabase: true}, outcomeNotApplicable},
+		{"no host to offer", &runner{server: srv.URL}, outcomeSkip},
+		{"host offered and upgraded", &runner{server: srv.URL, unresolvableHost: "nowhere.invalid"}, outcomeFail},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, msg := tt.r.runCase(context.Background(), k); got != tt.want {
+				t.Fatalf("outcome %d (%s), want %d", got, msg, tt.want)
+			}
+		})
+	}
+}
+
+func TestClaimedLevelsAllowNotApplicableButNotSkipped(t *testing.T) {
+	rep := report{Results: map[string]*levelResult{}}
+	rep.record(kase{ID: "a", Level: 3}, outcomePass, "")
+	rep.record(kase{ID: "b", Level: 3}, outcomeSkip, "cannot arrange")
+	rep.record(kase{ID: "c", Level: 4}, outcomePass, "")
+	rep.record(kase{ID: "d", Level: 4}, outcomeNotApplicable, "one database")
+	rep.record(kase{ID: "e", Level: 5}, outcomeNotApplicable, "one database")
+
+	got := claimedLevels(rep.Results)
+	if len(got) != 1 || got[0] != 4 {
+		t.Fatalf("claimed %v, want [4]", got)
+	}
+	if len(rep.NotApplicable) != 2 || rep.Results["4"].NotApplicable != 1 {
+		t.Fatalf("not applicable not recorded: %+v %+v", rep.NotApplicable, rep.Results["4"])
+	}
+}

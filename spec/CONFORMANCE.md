@@ -68,9 +68,9 @@ The corpus needs a real PostgreSQL. Three consequences worth stating before anyo
 
 - The version matters. `time` spelling, `interval` spelling and `tsvector` escaping all vary. The report MUST record the server version it ran against.
 - Rendering settings matter too. `money` follows `lc_monetary`, and timestamps and intervals follow `DateStyle` and `IntervalStyle`. The corpus pins all three with the `session_settings` fixture, which sets them on the database and so reaches sessions opened afterwards. `timestamptz` renders in the session `TimeZone`, which the corpus does not pin, so only its infinite values have cases.
-- Some cases cannot be expressed as a fixture plus a query, because they are about connection-level state or failure. Admission refusals (section 3) and upstream-unreachable errors (7.3) are configuration, not data. Those cases carry `"requires": "unreachable_upstream"` and a harness that cannot arrange the condition MUST report them as skipped rather than passed. The level 4 refusals are arranged the same way: `refusing_admission` sends the case to an instance of the server configured to refuse every request (`pgsconform -refusing-server`), and `unresolvable_host` sends the upgrade with a Host header the server resolves to no target (`pgsconform -unresolvable-host`). A server that serves one database resolves every Host, so it has no unresolvable host to offer.
+- Some cases cannot be expressed as a fixture plus a query, because they are about connection-level state or failure. Admission refusals (section 3) and upstream-unreachable errors (7.3) are configuration, not data. Those cases carry `"requires": "unreachable_upstream"` and a harness that cannot arrange the condition MUST report them as skipped rather than passed. The level 4 refusals are arranged the same way: `refusing_admission` sends the case to an instance of the server configured to refuse every request (`pgsconform -refusing-server`), and `unresolvable_host` sends the upgrade with a Host header the server resolves to no target (`pgsconform -unresolvable-host`). A server that serves one database resolves every Host, so it has no unresolvable host to offer. Section 9 frames host resolution as what a multi-tenant server does, so for such a server the requirement is vacuous rather than failed: its operator passes `pgsconform -single-database`, and the harness reports the `unresolvable_host` cases as not applicable instead of skipped. The flag cannot be combined with `-unresolvable-host`, and a server that can resolve a Host to no target MUST NOT use it.
 
-Skipped is a first-class outcome. A report claiming 100% where a third of the cases were skipped is worse than one that says so.
+Skipped is a first-class outcome. A report claiming 100% where a third of the cases were skipped is worse than one that says so. Not applicable is a separate outcome with its own count, never folded into passed or skipped.
 
 ## 5. The report
 
@@ -82,10 +82,10 @@ Skipped is a first-class outcome. A report claiming 100% where a third of the ca
   "postgres": "17.4",
   "claimed_levels": [1, 2, 3],
   "results": {
-    "1": { "passed": 24, "failed": 0, "skipped": 0 },
-    "2": { "passed": 41, "failed": 0, "skipped": 2 },
-    "3": { "passed": 9, "failed": 0, "skipped": 0 },
-    "4": { "passed": 0, "failed": 0, "skipped": 11 }
+    "1": { "passed": 24, "failed": 0, "skipped": 0, "not_applicable": 0 },
+    "2": { "passed": 41, "failed": 0, "skipped": 2, "not_applicable": 0 },
+    "3": { "passed": 9, "failed": 0, "skipped": 0, "not_applicable": 0 },
+    "4": { "passed": 0, "failed": 0, "skipped": 11, "not_applicable": 0 }
   },
   "loose_comparisons": 3,
   "failures": []
@@ -94,7 +94,7 @@ Skipped is a first-class outcome. A report claiming 100% where a third of the ca
 
 `spec` is the SPEC.md version the corpus declares in `spec_version`, and `corpus` is the corpus's own `version`. The two move separately: a corpus can gain cases for a spec version that has not changed, and an expectation changes only with a corpus version bump. A report without both cannot be reproduced.
 
-An implementation claims a level only when that level has zero failures and zero skips. The report is what an implementation publishes; the point is that "compatible" stops being a marketing word and becomes a number someone else can reproduce.
+An implementation claims a level only when that level has zero failures and zero skips. Not applicable cases do not block a claim, and the report lists each one under `not_applicable` so a reader sees what was declared rather than run. The report is what an implementation publishes; the point is that "compatible" stops being a marketing word and becomes a number someone else can reproduce.
 
 ## 6. What this cannot check
 

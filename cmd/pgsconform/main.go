@@ -54,6 +54,7 @@ func run() error {
 		connString = flag.String("client-conn", "", "connection string sent as the request header (default: -dsn)")
 		badHost    = flag.String("unresolvable-host", "", "a Host the server under test resolves to no target (cases needing one are skipped without it)")
 		refusing   = flag.String("refusing-server", "", "base URL of an instance of the server under test that refuses admission to every request (cases needing one are skipped without it)")
+		singleDB   = flag.Bool("single-database", false, "the server under test serves one database and resolves every Host to it, so cases needing an unresolvable host are reported not applicable")
 	)
 	flag.Parse()
 
@@ -66,6 +67,9 @@ func run() error {
 	}
 	if *connString == "" {
 		*connString = *dsn
+	}
+	if *singleDB && *badHost != "" {
+		return errors.New("-single-database and -unresolvable-host contradict each other: a server with an unresolvable host serves more than one database")
 	}
 
 	ctx := context.Background()
@@ -87,38 +91,13 @@ func run() error {
 		connString:       *connString,
 		unresolvableHost: *badHost,
 		refusingServer:   strings.TrimRight(*refusing, "/"),
+		singleDatabase:   *singleDB,
 	}
 	for _, c := range corpus.Cases {
-		lvl := strconv.Itoa(c.Level)
-		if rep.Results[lvl] == nil {
-			rep.Results[lvl] = &levelResult{}
-		}
 		outcome, detail := runner.runCase(ctx, c)
-		switch outcome {
-		case outcomePass:
-			rep.Results[lvl].Passed++
-		case outcomeSkip:
-			rep.Results[lvl].Skipped++
-			rep.Skips = append(rep.Skips, failure{ID: c.ID, Level: c.Level, Spec: c.Spec, Reason: detail})
-		case outcomeFail:
-			rep.Results[lvl].Failed++
-			rep.Failures = append(rep.Failures, failure{ID: c.ID, Level: c.Level, Spec: c.Spec, Reason: detail})
-		}
-		if c.Compare == "parses_equal" {
-			rep.LooseComparisons++
-		}
+		rep.record(c, outcome, detail)
 	}
-
-	// A level is claimed only with zero failures AND zero skips. A report that
-	// claims a level whose cases were skipped is the failure mode the corpus
-	// design calls out by name.
-	for lvl, r := range rep.Results {
-		if r.Failed == 0 && r.Skipped == 0 && r.Passed > 0 {
-			n, _ := strconv.Atoi(lvl)
-			rep.ClaimedLevels = append(rep.ClaimedLevels, n)
-		}
-	}
-	sort.Ints(rep.ClaimedLevels)
+	rep.ClaimedLevels = claimedLevels(rep.Results)
 
 	if err := emit(rep, *reportPath); err != nil {
 		return err
@@ -266,6 +245,8 @@ const (
 	outcomePass outcome = iota
 	outcomeFail
 	outcomeSkip
+	// outcomeNotApplicable is a case whose requirement the server cannot have, as opposed to one the harness could not arrange.
+	outcomeNotApplicable
 )
 
 type runner struct {
@@ -273,6 +254,7 @@ type runner struct {
 	connString       string
 	unresolvableHost string
 	refusingServer   string
+	singleDatabase   bool
 }
 
 // target is where a case is sent: the server, and the Host header to send when it is not the server's own.
@@ -304,6 +286,9 @@ func (r *runner) runCase(ctx context.Context, c kase) (outcome, string) {
 	var exp expectation
 	if err := json.Unmarshal(c.Expect, &exp); err != nil {
 		return outcomeFail, fmt.Sprintf("corpus case is malformed: %v", err)
+	}
+	if c.Requires == "unresolvable_host" && r.singleDatabase {
+		return outcomeNotApplicable, "the server serves one database and resolves every Host to it (-single-database)"
 	}
 
 	// GET is the WebSocket upgrade; every other case is a POST /sql.
@@ -887,12 +872,54 @@ type report struct {
 	LooseComparisons int                     `json:"loose_comparisons"`
 	Failures         []failure               `json:"failures"`
 	Skips            []failure               `json:"skips,omitempty"`
+	NotApplicable    []failure               `json:"not_applicable,omitempty"`
 }
 
 type levelResult struct {
-	Passed  int `json:"passed"`
-	Failed  int `json:"failed"`
-	Skipped int `json:"skipped"`
+	Passed        int `json:"passed"`
+	Failed        int `json:"failed"`
+	Skipped       int `json:"skipped"`
+	NotApplicable int `json:"not_applicable"`
+}
+
+func (rep *report) record(c kase, o outcome, detail string) {
+	lvl := strconv.Itoa(c.Level)
+	if rep.Results[lvl] == nil {
+		rep.Results[lvl] = &levelResult{}
+	}
+	r := rep.Results[lvl]
+	entry := failure{ID: c.ID, Level: c.Level, Spec: c.Spec, Reason: detail}
+	switch o {
+	case outcomePass:
+		r.Passed++
+	case outcomeSkip:
+		r.Skipped++
+		rep.Skips = append(rep.Skips, entry)
+	case outcomeNotApplicable:
+		r.NotApplicable++
+		rep.NotApplicable = append(rep.NotApplicable, entry)
+	case outcomeFail:
+		r.Failed++
+		rep.Failures = append(rep.Failures, entry)
+	}
+	if c.Compare == "parses_equal" {
+		rep.LooseComparisons++
+	}
+}
+
+// claimedLevels claims a level only with zero failures and zero skips, the
+// failure mode the corpus design calls out by name. A not applicable case
+// does not block a claim: the operator declared the server cannot have it.
+func claimedLevels(results map[string]*levelResult) []int {
+	var out []int
+	for lvl, r := range results {
+		if r.Failed == 0 && r.Skipped == 0 && r.Passed > 0 {
+			n, _ := strconv.Atoi(lvl)
+			out = append(out, n)
+		}
+	}
+	sort.Ints(out)
+	return out
 }
 
 type failure struct {
@@ -916,7 +943,7 @@ func emit(rep report, path string) error {
 	fmt.Printf("implementation %s, spec %s, corpus v%d, postgres %s\n", rep.Implementation, rep.Spec, rep.Corpus, rep.Postgres)
 	for _, lvl := range sortedKeys(rep.Results) {
 		r := rep.Results[lvl]
-		fmt.Printf("  level %s: %d passed, %d failed, %d skipped\n", lvl, r.Passed, r.Failed, r.Skipped)
+		fmt.Printf("  level %s: %d passed, %d failed, %d skipped, %d not applicable\n", lvl, r.Passed, r.Failed, r.Skipped, r.NotApplicable)
 	}
 	fmt.Printf("claimed levels: %v\n", rep.ClaimedLevels)
 	for _, f := range rep.Failures {
@@ -924,6 +951,9 @@ func emit(rep report, path string) error {
 	}
 	for _, s := range rep.Skips {
 		fmt.Printf("  SKIP %-46s %s\n", s.ID, s.Reason)
+	}
+	for _, s := range rep.NotApplicable {
+		fmt.Printf("  N/A  %-46s %s\n", s.ID, s.Reason)
 	}
 	return nil
 }
