@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Postgres serverless HTTP and WebSocket protocol
-  version: "0.2.0"
+  version: "0.3.0"
   description: |
     OpenAPI description of the protocol specified in SPEC.md, at the same
     version. SPEC.md is the normative text; where this file and SPEC.md differ,

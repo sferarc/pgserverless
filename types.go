@@ -210,6 +210,15 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 			return s
 		}
 	case oidTimestamp, oidTimestamptz:
+		// PostgreSQL's own text, as Neon's pg_text_to_json returns it (SPEC 6.4,
+		// Appendix B.2). expandedYearTimestamp is only the fallback for a caller
+		// with no type map, so a year outside 0 to 9999 still cannot fail the
+		// marshal.
+		if m != nil {
+			if s, ok := timestampFieldText(m, typeOID, v); ok {
+				return s
+			}
+		}
 		if s, ok := expandedYearTimestamp(v); ok {
 			return s
 		}
@@ -582,11 +591,8 @@ func rangeArrayElemOID(m *pgtype.Map, arrayOID uint32) (uint32, bool) {
 // whole response. Their finite elements pass through coerceNeonValue unchanged
 // and stay JSON numbers.
 //
-// The timestamp arrays are here for a third reason: only their infinite elements
-// need anything, and those are coerced on the decoded value rather than on this
-// OID (see infinityText). Their finite elements pass through unchanged and stay
-// RFC 3339 instants. timestamp[] and timestamptz[] are listed only so the walk
-// reaches the elements at all; date[] was already reached, above.
+// The timestamp arrays are here so each element, finite or infinite, is
+// spelled as PostgreSQL prints it (see timestampFieldText and infinityText).
 //
 // inet[] is a fourth reason: only its single-host elements need anything, and a
 // element carrying a real netmask passes through unchanged (see inetHostText).
@@ -851,10 +857,8 @@ func nonFiniteFloatString(v any) (string, bool) {
 // while 1 is indistinguishable from a value the column could hold.
 //
 // It matches on the decoded Go value rather than on the column's type OID,
-// because all three types decode an infinite value to this one type, and because
-// keying on the OID would mean coercing finite timestamps too. Those stay the
-// RFC 3339 instants this endpoint has always returned, as a deliberate
-// divergence from PostgreSQL's text form.
+// because all three types decode an infinite value to this one type. Finite
+// timestamps are spelled by timestampFieldText, which calls this first.
 //
 // The spellings are PostgreSQL's own and are what raw-text mode already returns
 // for these values, so a row reads back the same either way.
@@ -870,9 +874,9 @@ func infinityText(v any) (string, bool) {
 // refuses. time.Time marshals only years 0 to 9999, and PostgreSQL holds
 // timestamps from 4713 BC to 294276 AD, so a single row dated before 1 BC or
 // after 9999 failed the whole response, as a non-finite float used to. The
-// value is written in the ISO 8601 expanded form JavaScript's Date reads, a sign
-// and six year digits, so the column keeps the RFC 3339 shape its other rows
-// have. Years 0 to 9999 report false and keep encoding/json's own spelling.
+// value is written in the ISO 8601 expanded form, a sign and six year digits.
+// coerceNeonValue reaches it only when it has no type map to spell the value
+// as PostgreSQL does. Years 0 to 9999 report false.
 func expandedYearTimestamp(v any) (string, bool) {
 	t, ok := v.(time.Time)
 	if !ok {

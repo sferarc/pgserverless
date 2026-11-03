@@ -2,6 +2,11 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.3.0 (draft)
+
+- Section 6.4 requires `timestamp` and `timestamptz` in native mode to be emitted as PostgreSQL's text (`"2024-01-01 10:00:00"`, and `"2024-01-01 10:00:00+00"` in a UTC session), which is what Neon's proxy returns. This settles Appendix B item 2. A server emitting RFC 3339 (`"2024-01-01T10:00:00Z"`) conformed to 0.2.0 and does not conform to this version, the reference implementation included until this release.
+- The corpus `version` is 2: `native/timestamp-spelling-is-undecided`, which accepted either spelling, is replaced by `native/timestamp-as-text`, which accepts only PostgreSQL's. Two cases are new, `native/timestamp-array-as-text` and `native/timestamp-bc-as-text`.
+
 ## 0.2.0 (draft)
 
 - Section 6.4 requires an anonymous `record` to be emitted as PostgreSQL's record text, `"(1,2)"`, and a `record[]` as an array of those strings. Section 6.7 only said a composite must not be re-nested, so a server returning the fields as the JSON array `[1,2]` conformed to 0.1.1 and does not conform to this version. The corpus checks both.

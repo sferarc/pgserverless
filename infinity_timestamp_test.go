@@ -84,17 +84,10 @@ func TestConformance_InfiniteTimestampsAsText(t *testing.T) {
 // oidDateArray was in neonArrayElemOID; the two timestamp array types were not.
 // utcClock pins the process clock's zone for one test.
 //
-// A finite timestamp is marshalled by Go in the zone its time.Time carries, and
-// pgx hands back a value whose zone follows the process. So these assertions
-// compared an exact string against a rendering that changes with the developer's
-// machine: `2024-01-01T10:30:00Z` on a UTC host, `2024-01-01T11:30:00+01:00` in
-// Madrid. Both are RFC 3339 and both are the same instant, so the endpoint was
-// never wrong; the tests were, and they failed for everyone outside UTC while
-// passing in CI, which is the worst way round.
-//
-// Pinned rather than made offset-agnostic because the wire format is the thing
-// under test: the compat matrix promises "the RFC 3339 instants this endpoint has
-// always returned", and a test that accepts any offset stops checking the format.
+// pgx hands back a timestamptz whose zone follows the process. The rendering
+// normalizes it to UTC before writing "+00", so the spelling should not depend
+// on the host, but the clock is pinned anyway so a regression there shows up as
+// a wrong spelling on every machine rather than only off CI.
 func utcClock(t *testing.T) {
 	t.Helper()
 	previous := time.Local
@@ -118,7 +111,7 @@ func TestConformance_InfiniteTimestampsInArray(t *testing.T) {
 				{Time: finite, Valid: true},
 				{InfinityModifier: pgtype.NegativeInfinity, Valid: true},
 			},
-			[]string{"infinity", "2024-01-01T00:00:00Z", "-infinity"},
+			[]string{"infinity", "2024-01-01 00:00:00", "-infinity"},
 		},
 		{
 			"timestamptz array", oidTimestamptzArray,
@@ -126,7 +119,7 @@ func TestConformance_InfiniteTimestampsInArray(t *testing.T) {
 				{InfinityModifier: pgtype.Infinity, Valid: true},
 				{Time: finite, Valid: true},
 			},
-			[]string{"infinity", "2024-01-01T00:00:00Z"},
+			[]string{"infinity", "2024-01-01 00:00:00+00"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,36 +145,20 @@ func TestConformance_InfiniteTimestampsInArray(t *testing.T) {
 }
 
 // assertTimestampElems compares a JSON array of timestamp strings element by
-// element. An element that parses as RFC 3339 is compared as an instant rather
-// than as a spelling: pgx decodes a timestamptz into time.Local, so
-// encoding/json writes whatever offset the process's zone has, "…T00:00:00Z" in
-// the UTC containers this runs in and "…T01:00:00+01:00" on a developer machine
-// in CET. Both are the same instant and both are RFC 3339. The infinite elements
-// are what this test is about and are compared as the exact words PostgreSQL
-// prints.
+// element, as the exact words PostgreSQL prints.
 func assertTimestampElems(t *testing.T, want []string, got json.RawMessage) {
 	t.Helper()
 	var elems []string
 	require.NoError(t, json.Unmarshal(got, &elems))
-	require.Len(t, elems, len(want))
-	for i, w := range want {
-		wantAt, err := time.Parse(time.RFC3339, w)
-		if err != nil {
-			assert.Equal(t, w, elems[i])
-			continue
-		}
-		gotAt, err := time.Parse(time.RFC3339, elems[i])
-		require.NoError(t, err, "element %d: %q is not RFC 3339", i, elems[i])
-		assert.True(t, wantAt.Equal(gotAt), "element %d: %s is not the instant %s", i, elems[i], w)
-	}
+	assert.Equal(t, want, elems)
 }
 
-// The regression guard on the other side. A finite timestamp is not touched: it
-// stays the RFC 3339 instant this endpoint has always returned, which the compat
-// matrix records as a deliberate divergence from PostgreSQL's own text. Coercing
-// every timestamp to PostgreSQL text would be a silent contract change for every
-// client already parsing these columns as dates.
-func TestConformance_FiniteTimestampsUnchanged(t *testing.T) {
+// A finite timestamp is spelled as PostgreSQL prints it in a UTC session, which
+// is what Neon's pg_text_to_json returns: every scalar that is not a bool, an
+// int2 or int4, a float or json goes out as its PostgreSQL text. This used to
+// be RFC 3339 ("2024-01-01T10:30:00Z"), which put a "Z" on a timestamp that
+// carries no zone. SPEC Appendix B.2 records the decision.
+func TestConformance_FiniteTimestampsAsText(t *testing.T) {
 	utcClock(t)
 	finite := time.Date(2024, 1, 1, 10, 30, 0, 0, time.UTC)
 	pg := pgfake.New(t)
@@ -208,20 +185,44 @@ func TestConformance_FiniteTimestampsUnchanged(t *testing.T) {
 	var rows []map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(raw["rows"], &rows))
 	require.Len(t, rows, 1)
-	// timestamp and timestamp[] carry no zone, so pgx decodes them in UTC and
-	// the spelling is fixed.
-	assert.JSONEq(t, `"2024-01-01T10:30:00Z"`, string(rows[0]["a"]))
-	assert.JSONEq(t, `["2024-01-01T10:30:00Z"]`, string(rows[0]["c"]))
+	assert.JSONEq(t, `"2024-01-01 10:30:00"`, string(rows[0]["a"]))
+	assert.JSONEq(t, `"2024-01-01 10:30:00+00"`, string(rows[0]["b"]))
+	assert.JSONEq(t, `["2024-01-01 10:30:00"]`, string(rows[0]["c"]))
+}
 
-	// timestamptz is asserted as an instant rather than as a spelling. pgx
-	// decodes it into time.Local, so encoding/json writes whatever offset the
-	// process's zone has: "…T10:30:00Z" in the UTC containers this runs in and
-	// "…T11:30:00+01:00" on a developer machine in CET. Both are the same
-	// instant and both are RFC 3339, which is the whole of what this test is
-	// guarding, so pinning the offset would only make it fail off-CI.
-	var tz time.Time
-	require.NoError(t, json.Unmarshal(rows[0]["b"], &tz))
-	assert.True(t, finite.Equal(tz), "timestamptz %s is not the instant %s", tz, finite)
+// pgx decodes a timestamptz into time.Local, so on a host outside UTC the value
+// carries that host's offset. The spelling must not: it is the instant in UTC,
+// as PostgreSQL prints it in the UTC session Neon and the reference server use.
+func TestConformance_TimestamptzTextIgnoresProcessZone(t *testing.T) {
+	previous := time.Local
+	time.Local = time.FixedZone("CET", 3600)
+	t.Cleanup(func() { time.Local = previous })
+
+	at := time.Date(2024, 6, 1, 10, 0, 0, 123456000, time.UTC)
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT a, b FROM t", pgfake.Result{
+		Cols: []pgfake.Col{
+			{Name: "a", TypeOID: oidTimestamptz},
+			{Name: "b", TypeOID: oidTimestamptzArray},
+		},
+		Rows: [][]any{{
+			pgtype.Timestamptz{Time: at, Valid: true},
+			[]pgtype.Timestamptz{{Time: at, Valid: true}},
+		}},
+		Tag: "SELECT 1",
+	})
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, `{"query":"SELECT a, b FROM t"}`, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	var rows []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["rows"], &rows))
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, `"2024-06-01 10:00:00.123456+00"`, string(rows[0]["a"]))
+	assert.JSONEq(t, `["2024-06-01 10:00:00.123456+00"]`, string(rows[0]["b"]))
 }
 
 // Raw-text mode never reaches coerceNeonValue, so it was never broken: it

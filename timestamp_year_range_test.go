@@ -16,7 +16,8 @@ import (
 // time.Time refuses to JSON-marshal a year outside 0 to 9999, and PostgreSQL
 // timestamps run from 4713 BC to 294276 AD. One such row used to lose the whole
 // response: the status was already written, so the client got a 200 with an
-// empty body.
+// empty body. Every timestamp is now spelled as PostgreSQL prints it, so these
+// are the strings psql shows in a UTC session (checked against PostgreSQL 17).
 func TestConformance_TimestampOutsideFourDigitYears(t *testing.T) {
 	utcClock(t)
 	bc := time.Date(-43, 3, 15, 12, 0, 0, 0, time.UTC) // 44 BC
@@ -49,10 +50,20 @@ func TestConformance_TimestampOutsideFourDigitYears(t *testing.T) {
 	var rows []map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(raw["rows"], &rows))
 	require.Len(t, rows, 1)
-	assert.JSONEq(t, `"-000043-03-15T12:00:00Z"`, string(rows[0]["a"]))
-	assert.JSONEq(t, `"+010000-01-01T00:00:00.5Z"`, string(rows[0]["b"]))
-	assert.JSONEq(t, `["-000043-03-15T12:00:00Z","2024-01-01T10:30:00Z"]`, string(rows[0]["c"]))
-	assert.JSONEq(t, `["+010000-01-01T00:00:00.5Z","infinity"]`, string(rows[0]["d"]))
+	assert.JSONEq(t, `"0044-03-15 12:00:00 BC"`, string(rows[0]["a"]))
+	assert.JSONEq(t, `"10000-01-01 00:00:00.5+00"`, string(rows[0]["b"]))
+	assert.JSONEq(t, `["0044-03-15 12:00:00 BC","2024-01-01 10:30:00"]`, string(rows[0]["c"]))
+	assert.JSONEq(t, `["10000-01-01 00:00:00.5+00","infinity"]`, string(rows[0]["d"]))
+}
+
+// Without a type map there is nothing to spell PostgreSQL's text with, so a year
+// outside 0 to 9999 falls back to the expanded ISO 8601 form rather than failing
+// the marshal.
+func TestCoerceNeonValue_TimestampWithoutTypeMap(t *testing.T) {
+	bc := time.Date(-43, 3, 15, 12, 0, 0, 0, time.UTC)
+	assert.Equal(t, "-000043-03-15T12:00:00Z", coerceNeonValue(nil, bc, oidTimestamp))
+	inRange := time.Date(2024, 1, 1, 10, 30, 0, 0, time.UTC)
+	assert.Equal(t, inRange, coerceNeonValue(nil, inRange, oidTimestamp))
 }
 
 func TestExpandedYearTimestamp(t *testing.T) {

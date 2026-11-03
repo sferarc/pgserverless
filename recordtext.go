@@ -123,7 +123,7 @@ func pgFloatText(f float64, bitSize int) string {
 	return strconv.FormatFloat(f, 'f', -1, bitSize)
 }
 
-// timestampFieldText spells a timestamp as timestamp_out does in a UTC session, where the column path keeps RFC 3339.
+// timestampFieldText spells a timestamp as timestamp_out does in a UTC session, for a column and a record field alike.
 func timestampFieldText(m *pgtype.Map, oid uint32, v any) (string, bool) {
 	if s, ok := infinityText(v); ok {
 		return s, true

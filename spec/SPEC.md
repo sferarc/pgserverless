@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.2.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.3.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -222,6 +222,8 @@ Each of these MUST be emitted as the PostgreSQL text representation.
 | `bytea` | `"AQI="`, base64, unmarked | `"\\x0102"` |
 | `xml` | base64 | the document text |
 | `date` | `"2024-01-01T00:00:00Z"` | `"2024-01-01"` |
+| `timestamp` | `"2024-01-01T10:00:00Z"`, RFC 3339 | `"2024-01-01 10:00:00"` |
+| `timestamptz` | `"2024-01-01T10:00:00Z"`, RFC 3339 | `"2024-01-01 10:00:00+00"` in a UTC session |
 | `time`, `interval` | an object of decoder field names | the text form |
 | `macaddr`, `macaddr8` | `"CAArAQID"`, base64 | `"08:00:2b:01:02:03"` |
 | `bit`, `varbit` | `{"Bytes":"oA==","Len":3}` | `"101"` |
@@ -230,6 +232,8 @@ Each of these MUST be emitted as the PostgreSQL text representation.
 | `record` | `[1,2]`, an array of its fields | `"(1,2)"` |
 
 `point` is worth calling out as the exception that needs nothing in at least one decoder, so implementers should check rather than assume.
+
+`timestamp` and `timestamptz` are on this list because Neon's proxy returns them as PostgreSQL prints them, as it does every scalar that is not a boolean, an `int2` or `int4`, a float, or `json`/`jsonb`. A decoder that hands back a native date-time and lets the JSON encoder write it produces RFC 3339, which is readable but a different string, and on a `timestamp` it adds a `Z` the value never had. The required output keeps PostgreSQL's spelling exactly: a space between date and time, fractional seconds only when present, a trailing ` BC` before year 1, and a year past 9999 written in full (`"10000-01-01 00:00:00"`). A `timestamptz` carries the session `TimeZone`'s offset as `timestamptz_out` prints it; a server that does not track the session's zone MUST render it in UTC, which is `+00`.
 
 `record` is the anonymous composite that `ROW(...)` produces. A decoder that turns it into a list of its fields makes it look like an array, which is wrong twice over: the client cannot tell it from an array column, and each field arrives in the decoder's spelling rather than PostgreSQL's (a `bytea` field as base64, a nested record as another list). The required output is the whole value as PostgreSQL's record text, each field spelled and quoted as PostgreSQL prints it, so `ROW(1,'a b')` is `"(1,\"a b\")"`.
 
@@ -402,7 +406,7 @@ The client always sends `Neon-Raw-Text-Output: true`, which selects raw text mod
 These could not be settled from either source and MUST NOT be guessed by an implementer.
 
 1. **Duplicate column names in object mode.** Unspecified. The client never asks for object mode, so no behaviour is pinned.
-2. **`timestamp` and `timestamptz` in native mode.** The reference implementation deliberately emits RFC 3339 (`"2024-01-01T10:00:00Z"`) where PostgreSQL prints `2024-01-01 10:00:00`. Which is correct for this protocol is undecided, and the corpus carries the case as a tolerant comparison rather than asserting either.
+2. **`timestamp` and `timestamptz` in native mode.** Settled in 0.3.0: PostgreSQL's text, as Neon's proxy returns it. Section 6.4 states the requirement. The reference implementation emitted RFC 3339 (`"2024-01-01T10:00:00Z"`) before then.
 3. **Whether an implementation may omit raw text mode.** This document requires it at level 1 because the client requires it. If a server exists whose only consumers are native-mode, the level structure may be wrong.
 4. **Maximum request and response sizes.** Sections 4.3 and 7.2 let a server refuse an oversized batch, request body or response, and give the status for each, but no limit is specified and no size every server must accept. The reference implementation refuses a batch over 100 statements and a request body over 10 MiB, and its server refuses a response whose row values pass 10 MiB. Whether conformance should set a floor a client can rely on is undecided.
 5. **`format` in the field descriptor.** The reference implementation always emits `"text"`. Whether a server may emit `"binary"`, and what a client does with it, is unknown.

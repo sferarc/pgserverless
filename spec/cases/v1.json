@@ -1,6 +1,6 @@
 {
-  "spec_version": "0.2.0",
-  "version": 1,
+  "spec_version": "0.3.0",
+  "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
     {
@@ -2932,11 +2932,10 @@
       }
     },
     {
-      "id": "native/timestamp-spelling-is-undecided",
+      "id": "native/timestamp-as-text",
       "level": 2,
-      "spec": "Appendix B.2",
-      "note": "Undecided: PostgreSQL prints a space separated value, some servers emit RFC 3339. Both are accepted until the spec chooses. timestamptz is left out because it renders in the session TimeZone, which the corpus cannot pin.",
-      "compare": "parses_equal",
+      "spec": "6.4",
+      "note": "PostgreSQL's spelling, as Neon returns it: a space, not a T, and no Z on a value with no zone. Settled in SPEC 0.3.0 (Appendix B.2). timestamptz is left out because it renders in the session TimeZone, which the corpus does not pin.",
       "request": {
         "path": "/sql",
         "headers": {
@@ -2952,8 +2951,59 @@
         "rows": [
           {
             "v": {
-              "json": "\"2024-01-01 10:00:00\"",
-              "also": ["\"2024-01-01T10:00:00Z\""]
+              "json": "\"2024-01-01 10:00:00\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamp-array-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "Element-wise, with fractional seconds only where the value has them.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT ARRAY['2024-01-01 10:00:00','2024-01-01 10:00:00.25']::timestamp[] AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "[\"2024-01-01 10:00:00\",\"2024-01-01 10:00:00.25\"]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "native/timestamp-bc-as-text",
+      "level": 2,
+      "spec": "6.4",
+      "note": "A year before 1 is written with a trailing BC, which a decoder whose JSON encoder refuses such years must still produce.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT '0044-03-15 12:00:00 BC'::timestamp AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          {
+            "v": {
+              "json": "\"0044-03-15 12:00:00 BC\""
             }
           }
         ]
