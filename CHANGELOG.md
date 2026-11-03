@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.4
+
+### Patch Changes
+
+- 8baa4df: `pgsconform` now checks `error.message_contains` and `error.must_not_contain`, which the corpus schema allowed but the harness ignored. A case with `message_contains` used to pass for any error message, and one with `must_not_contain` passed a server that leaked the listed text, such as its connection string, in an error. The leak check reads the response body as sent and with its JSON strings decoded. The reference implementation already passes the corpus.
+
 ## 0.7.3
 
 ### Patch Changes
