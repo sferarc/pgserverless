@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+
+### Patch Changes
+
+- deaa5a8: A `POST /sql` statement that starts a COPY to or from the client is now refused at once with 400 and SQLSTATE `0A000`, as Neon's proxy refuses it. `COPY ... FROM STDIN` used to hold its upstream connection until the 30 second query timeout, and `COPY ... TO STDOUT` answered 200 with its rows dropped. The upstream connection is closed, so PostgreSQL aborts the COPY and the rest of a batch's transaction.
+
 ## 0.7.1
 
 ### Patch Changes
