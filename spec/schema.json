@@ -144,6 +144,11 @@
           "enum": ["error"],
           "description": "Accept any 4xx or 5xx. Used where SPEC.md 7.2 leaves the mapping to the implementation but still requires the error shape."
         },
+        "answered_within_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The server must have answered, body included, within this many milliseconds of the request being sent. Used where SPEC.md requires an answer at once rather than one at the server's request timeout."
+        },
         "command": { "type": "string" },
         "row_count": { "type": ["integer", "null"] },
         "row_as_array": { "type": "boolean" },

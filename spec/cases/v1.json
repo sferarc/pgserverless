@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.4.1",
+  "spec_version": "0.5.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -516,6 +516,39 @@
       "expect": {
         "status": 400,
         "error": { "codes": ["22021", "08P01"], "severity": "ERROR" }
+      }
+    },
+    {
+      "id": "errors/copy-to-stdout-is-400-at-once",
+      "level": 1,
+      "spec": "7.2",
+      "note": "A request cannot receive COPY data. A server that ignores the CopyOutResponse answers 200 with the rows dropped. Neon sends no code, so none is required.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": false },
+        "body": { "query": "COPY (SELECT 1) TO STDOUT" }
+      },
+      "expect": {
+        "status": 400,
+        "answered_within_ms": 5000,
+        "error": {}
+      }
+    },
+    {
+      "id": "errors/copy-from-stdin-is-400-at-once",
+      "level": 1,
+      "spec": "7.2",
+      "fixture": "constrained",
+      "note": "A request cannot send COPY data. A server that ignores the CopyInResponse waits for data that never comes until its own timeout, which answered_within_ms fails.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": false },
+        "body": { "query": "COPY cf_constrained (id, email) FROM STDIN" }
+      },
+      "expect": {
+        "status": 400,
+        "answered_within_ms": 5000,
+        "error": {}
       }
     },
     {
@@ -4372,6 +4405,35 @@
           "code": "22012",
           "has_fields": ["code", "severity"]
         }
+      }
+    },
+    {
+      "id": "batch/copy-in-a-batch-is-400-at-once",
+      "level": 3,
+      "spec": "7.2",
+      "fixture": "constrained",
+      "note": "A COPY fails a batch like any other statement, at once and with the error for the whole batch.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT 1"
+            },
+            {
+              "query": "COPY cf_constrained (id, email) FROM STDIN"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "answered_within_ms": 5000,
+        "error": {}
       }
     }
   ]

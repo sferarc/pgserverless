@@ -158,6 +158,7 @@ type headerSpec struct {
 type expectation struct {
 	Status      *int             `json:"status"`
 	StatusClass string           `json:"status_class"`
+	WithinMS    int              `json:"answered_within_ms"`
 	Command     *string          `json:"command"`
 	RowCount    *int             `json:"row_count"`
 	RowAsArray  *bool            `json:"row_as_array"`
@@ -304,6 +305,12 @@ func (r *runner) runCase(ctx context.Context, c kase) (outcome, string) {
 }
 
 func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation, t target) (outcome, string) {
+	if exp.WithinMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(exp.WithinMS)*time.Millisecond)
+		defer cancel()
+	}
+	late := func(err error) bool { return exp.WithinMS > 0 && errors.Is(err, context.DeadlineExceeded) }
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.server+c.Request.Path, bytes.NewReader(c.Request.Body))
 	if err != nil {
 		return outcomeFail, err.Error()
@@ -316,11 +323,17 @@ func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation, t target)
 	applyHeaders(req, c.Request.Headers)
 
 	resp, err := http.DefaultClient.Do(req)
+	if late(err) {
+		return outcomeFail, fmt.Sprintf("no answer within %d ms", exp.WithinMS)
+	}
 	if err != nil {
 		return outcomeFail, fmt.Sprintf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if late(err) {
+		return outcomeFail, fmt.Sprintf("status %d, but the body did not finish within %d ms", resp.StatusCode, exp.WithinMS)
+	}
 
 	if problems := checkStatus(exp, resp.StatusCode); problems != "" {
 		return outcomeFail, problems + bodyHint(body)

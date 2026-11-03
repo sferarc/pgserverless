@@ -60,6 +60,8 @@ Four things about that shape are deliberate.
 
 An error case can be tolerant the same way. Where the SQLSTATE depends on how a server reaches PostgreSQL, the case lists the codes it accepts in `error.codes` instead of naming one in `error.code`.
 
+A case may bound the time to answer. Where the spec requires a refusal at once, the case carries `answered_within_ms`, and the harness fails it when the full response has not arrived by then. A server that waits for its own request timeout and then answers with the right status still fails.
+
 ## 4. Fixtures and the database
 
 Cases reference a fixture by name. A fixture is a SQL file that creates and populates its tables, and it MUST be idempotent, since the practical way to run this is against a scratch database that several runs share.

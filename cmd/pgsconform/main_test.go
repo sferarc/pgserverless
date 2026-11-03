@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestEqualJSONTextExact(t *testing.T) {
@@ -193,5 +198,38 @@ func TestLoadCorpusRejectsAmbiguousErrorCodes(t *testing.T) {
 		if _, err := loadCorpus(path); err == nil {
 			t.Fatalf("want an error for %s", e)
 		}
+	}
+}
+
+// A refusal answered only at the server's own timeout must fail a case that asks for an answer at once.
+func TestAnsweredWithinFailsALateAnswer(t *testing.T) {
+	tests := []struct {
+		name       string
+		headerWait time.Duration
+		bodyWait   time.Duration
+		ok         bool
+	}{
+		{"at once", 0, 0, true},
+		{"late status", 300 * time.Millisecond, 0, false},
+		{"late body", 0, 300 * time.Millisecond, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				time.Sleep(tt.headerWait)
+				w.WriteHeader(http.StatusBadRequest)
+				w.(http.Flusher).Flush()
+				time.Sleep(tt.bodyWait)
+				_, _ = w.Write([]byte(`{"message":"refused"}`))
+			}))
+			defer srv.Close()
+			c := kase{ID: "x", Request: requestSpec{Path: "/sql", Body: json.RawMessage(`{"query":"COPY (SELECT 1) TO STDOUT"}`)}}
+			status := http.StatusBadRequest
+			exp := expectation{Status: &status, WithinMS: 100, Error: &expectedError{}}
+			got, detail := (&runner{server: srv.URL}).runHTTP(context.Background(), c, exp, target{server: srv.URL})
+			if (got == outcomePass) != tt.ok || (!tt.ok && !strings.Contains(detail, "within 100 ms")) {
+				t.Fatalf("runHTTP = %v %q, want ok=%v", got, detail, tt.ok)
+			}
+		})
 	}
 }

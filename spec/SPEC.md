@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.4.1, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.5.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -308,12 +308,15 @@ So the status decides whether a user sees the SQLSTATE at all, and the rules bel
 | --- | --- |
 | Malformed body, missing `query`, oversized batch, unusable connection string, a refused batch header (section 8) | 400 |
 | The request was cancelled or timed out, while connecting or while running | 400, with `code` `08P01` |
+| A statement started a COPY to or from the client | 400, at once |
 | The connection to the upstream was lost while running | 400 |
 | The request body exceeds the deployment's limit | 413 |
 | The response exceeds the deployment's limit | 507 |
 | Anything else | 500 |
 
 Admission refusals (section 3) are deployment policy and keep the status that describes them.
+
+**A statement that starts a COPY to or from the client.** A request has no way to send the data of `COPY ... FROM STDIN` or to receive the data of `COPY ... TO STDOUT`. When a statement puts the upstream in copy mode (PostgreSQL answers CopyInResponse, CopyOutResponse or CopyBothResponse), the server MUST answer 400 with the error shape as soon as it sees that answer: it MUST NOT wait for its request timeout, and MUST NOT answer 200 with the rows a `COPY ... TO STDOUT` wrote. It SHOULD send `code` `0A000` (feature_not_supported). Neon's proxy answers `unexpected message from server` with no code, so a client cannot rely on one. In a batch the statement fails like any other, so the transaction is aborted and nothing the batch did persists (section 8).
 
 ### 7.3 Non-database failures
 
