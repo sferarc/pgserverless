@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.3.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.4.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -122,6 +122,8 @@ Parameters arrive as JSON, which cannot express every PostgreSQL type, so a serv
 
 **An element MUST be quoted whenever the bare text would read back as a different value**: when it is empty, when it case-insensitively equals `NULL`, or when it contains any of `{`, `}`, `,`, `"`, `\` or whitespace. Quoting escapes `"` and `\` with a backslash.
 
+**A JSON array is rendered as an array literal whatever type the parameter has**, and the server MUST NOT choose another rendering from the type. The parameter's own input function then reads the literal: `text` receives it as is (`[1,"a b",null]` binds as `{1,"a b",NULL}`), and a scalar type such as `int4` rejects it with SQLSTATE 22P02, as do `json` and `jsonb`, since an array literal is not JSON. A client that wants a JSON array in a `json` or `jsonb` parameter sends it as a string. This is what Neon's proxy does.
+
 ## 5. The HTTP response
 
 ### 5.1 Result object
@@ -146,7 +148,7 @@ A successful single-statement request returns HTTP 200 and one result object. A 
 | `rows` | array | Never null. An empty result set MUST be `[]`. |
 | `rowAsArray` | boolean | Echoes whether rows are positional. |
 
-When array mode is on, each row is an array of values in column order. When it is off, each row is an object keyed by column name. A duplicate column name in object mode is unspecified; clients requesting object mode from a query with duplicate names get an implementation-defined result, which is one reason the client always uses array mode.
+When array mode is on, each row is an array of values in column order. When it is off, each row is an object keyed by column name, and the server MUST write one member per column in column order, a repeated name included, so `SELECT 1 AS a, 2 AS a` yields `{"a":1,"a":2}`. A client parsing that object keeps the last member, as `JSON.parse` does, and so sees the last column with the name; `fields` still lists every column. This is what Neon's proxy writes, and what the client itself builds when it turns an array-mode row into an object.
 
 ### 5.2 Field descriptor
 
@@ -163,6 +165,8 @@ When array mode is on, each row is an array of values in column order. When it i
 ```
 
 `dataTypeID` is the PostgreSQL type OID and is **required**: in raw text mode it is the only thing telling the client how to parse the value. `tableID` and `columnID` are 0 for a computed column.
+
+`format` MUST be `"text"`. Every value in a response is PostgreSQL's text representation or JSON decoded from it, in both modes (5.3), so there is no binary value for the member to describe. The client ignores `format` over HTTP and picks its parser from `dataTypeID` alone. Neon's proxy always writes `"text"`.
 
 ### 5.3 Two response modes
 
@@ -405,9 +409,9 @@ The client always sends `Neon-Raw-Text-Output: true`, which selects raw text mod
 
 These could not be settled from either source and MUST NOT be guessed by an implementer.
 
-1. **Duplicate column names in object mode.** Unspecified. The client never asks for object mode, so no behaviour is pinned.
+1. **Duplicate column names in object mode.** Settled in 0.4.0: one member per column, a repeated name included, as Neon's proxy writes it. Section 5.1 states the requirement.
 2. **`timestamp` and `timestamptz` in native mode.** Settled in 0.3.0: PostgreSQL's text, as Neon's proxy returns it. Section 6.4 states the requirement. The reference implementation emitted RFC 3339 (`"2024-01-01T10:00:00Z"`) before then.
 3. **Whether an implementation may omit raw text mode.** This document requires it at level 1 because the client requires it. If a server exists whose only consumers are native-mode, the level structure may be wrong.
 4. **Maximum request and response sizes.** Sections 4.3 and 7.2 let a server refuse an oversized batch, request body or response, and give the status for each, but no limit is specified and no size every server must accept. The reference implementation refuses a batch over 100 statements and a request body over 10 MiB, and its server refuses a response whose row values pass 10 MiB. Whether conformance should set a floor a client can rely on is undecided.
-5. **`format` in the field descriptor.** The reference implementation always emits `"text"`. Whether a server may emit `"binary"`, and what a client does with it, is unknown.
+5. **`format` in the field descriptor.** Settled in 0.4.0: always `"text"`, as Neon's proxy writes it. Section 5.2 states the requirement.
 6. **Text spellings that differ by decoder.** PostgreSQL prints a `time` with whole seconds without fractional digits, an `interval` of whole days without a time part, and doubles a single quote inside a `tsvector` lexeme. The reference implementation spells all three as PostgreSQL does, but a server whose decoder prints `10:00:00.000000`, `1 day 00:00:00` or a backslash escaped quote sends values that parse back to the same thing. Whether conformance should require PostgreSQL's exact spelling is undecided, and the corpus marks these as tolerant comparisons.

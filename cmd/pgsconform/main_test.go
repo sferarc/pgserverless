@@ -136,6 +136,27 @@ func TestCheckResults(t *testing.T) {
 	}
 }
 
+func TestCheckFieldsFormat(t *testing.T) {
+	text := "text"
+	exp := []expectedField{{Name: "id", Format: &text}}
+	tests := []struct {
+		body string
+		ok   bool
+	}{
+		{`[{"name":"id","dataTypeID":23,"format":"text"}]`, true},
+		{`[{"name":"id","dataTypeID":23,"format":"binary"}]`, false},
+		{`[{"name":"id","dataTypeID":23}]`, false},
+	}
+	for _, tt := range tests {
+		if msg := checkFields(exp, json.RawMessage(tt.body)); (msg == "") != tt.ok {
+			t.Errorf("checkFields(%s) = %q, want ok=%v", tt.body, msg, tt.ok)
+		}
+	}
+	if msg := checkFields([]expectedField{{Name: "id"}}, json.RawMessage(`[{"name":"id","format":"binary"}]`)); msg != "" {
+		t.Errorf("format checked without being expected: %q", msg)
+	}
+}
+
 func TestCheckErrorCodes(t *testing.T) {
 	exp := &expectedError{Codes: []string{"22021", "08P01"}}
 	tests := []struct {

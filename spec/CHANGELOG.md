@@ -2,6 +2,13 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.4.0 (draft)
+
+- Section 5.1 requires an object-mode row to carry one member per column in column order, a repeated name included, which is what Neon's proxy writes. This settles Appendix B item 1. A client parsing the row sees the last column with the name. The corpus checks it in `core/duplicate-columns-in-object-mode`.
+- Section 5.2 requires `format` in a field descriptor to be `"text"`, which is what Neon's proxy writes. This settles Appendix B item 5. The corpus checks it in `core/field-format-is-text`, and a corpus field may now list `format`.
+- Section 4.4 requires a JSON array parameter to be rendered as an array literal whatever the parameter's type, as Neon's proxy does: `text` receives the literal and `int4`, `json` and `jsonb` reject it with 22P02. Three `params/array-into-*` cases check it.
+- The corpus `version` stays 2, since no existing case's expectation changed.
+
 ## 0.3.0 (draft)
 
 - Section 6.4 requires `timestamp` and `timestamptz` in native mode to be emitted as PostgreSQL's text (`"2024-01-01 10:00:00"`, and `"2024-01-01 10:00:00+00"` in a UTC session), which is what Neon's proxy returns. This settles Appendix B item 2. A server emitting RFC 3339 (`"2024-01-01T10:00:00Z"`) conformed to 0.2.0 and does not conform to this version, the reference implementation included until this release.

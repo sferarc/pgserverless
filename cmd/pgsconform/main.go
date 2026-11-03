@@ -169,8 +169,9 @@ type expectation struct {
 }
 
 type expectedField struct {
-	Name       string `json:"name"`
-	DataTypeID *int   `json:"data_type_id"`
+	Name       string  `json:"name"`
+	DataTypeID *int    `json:"data_type_id"`
+	Format     *string `json:"format"`
 }
 
 type expectedError struct {
@@ -612,8 +613,9 @@ func checkResults(exp []expectation, raw json.RawMessage, loose bool) string {
 
 func checkFields(exp []expectedField, raw json.RawMessage) string {
 	var fields []struct {
-		Name       string `json:"name"`
-		DataTypeID int    `json:"dataTypeID"`
+		Name       string  `json:"name"`
+		DataTypeID int     `json:"dataTypeID"`
+		Format     *string `json:"format"`
 	}
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return fmt.Sprintf("fields: %v", err)
@@ -627,6 +629,13 @@ func checkFields(exp []expectedField, raw json.RawMessage) string {
 		}
 		if e.DataTypeID != nil && fields[i].DataTypeID != *e.DataTypeID {
 			return fmt.Sprintf("fields[%d].dataTypeID: want %d, got %d", i, *e.DataTypeID, fields[i].DataTypeID)
+		}
+		if e.Format != nil && (fields[i].Format == nil || *fields[i].Format != *e.Format) {
+			got := "absent"
+			if fields[i].Format != nil {
+				got = strconv.Quote(*fields[i].Format)
+			}
+			return fmt.Sprintf("fields[%d].format: want %q, got %s", i, *e.Format, got)
 		}
 	}
 	return ""

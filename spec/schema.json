@@ -154,7 +154,8 @@
             "additionalProperties": false,
             "properties": {
               "name": { "type": "string" },
-              "data_type_id": { "type": "integer" }
+              "data_type_id": { "type": "integer" },
+              "format": { "type": "string" }
             }
           },
           "description": "Checked field by field, in order. Only the members listed are compared, since tableID and columnID vary by database."

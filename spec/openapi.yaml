@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Postgres serverless HTTP and WebSocket protocol
-  version: "0.3.0"
+  version: "0.4.0"
   description: |
     OpenAPI description of the protocol specified in SPEC.md, at the same
     version. SPEC.md is the normative text; where this file and SPEC.md differ,
@@ -351,8 +351,8 @@ components:
     Params:
       description: |
         Positional parameters binding `$1`, `$2` and so on. A JSON array
-        parameter is bound as a PostgreSQL array literal, nested arrays as
-        nested literals (SPEC.md 4.4).
+        parameter is bound as a PostgreSQL array literal whatever the
+        parameter's type, nested arrays as nested literals (SPEC.md 4.4).
       type: array
       items: {}
 
@@ -422,8 +422,9 @@ components:
           type: integer
           format: int32
         format:
-          description: Always `text` in the reference implementation. Whether `binary` is allowed is open (SPEC.md Appendix B.5).
+          description: Always `text` (SPEC.md 5.2).
           type: string
+          enum: [text]
 
     BatchResponse:
       description: The result of a batch (SPEC.md 8).

@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.3.0",
+  "spec_version": "0.4.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -3097,7 +3097,7 @@
       "id": "core/duplicate-columns-in-array-mode",
       "level": 1,
       "spec": "5.3",
-      "note": "Object mode with duplicate column names is undecided (Appendix B.1), so this pins only array mode, where position keeps the columns apart.",
+      "note": "In array mode position keeps two columns with the same name apart. core/duplicate-columns-in-object-mode pins object mode.",
       "request": {
         "path": "/sql",
         "headers": {
@@ -3120,6 +3120,59 @@
               "json": "2"
             }
           ]
+        ]
+      }
+    },
+    {
+      "id": "core/duplicate-columns-in-object-mode",
+      "level": 1,
+      "spec": "5.1",
+      "note": "One member per column in column order, a repeated name included, as Neon's proxy writes it. Parsed as a client parses it (JSON.parse, or the client's own Object.fromEntries over an array-mode row), the last column with the name wins. fields still lists both.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": false,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT 1 AS a, 2 AS a"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "row_as_array": false,
+        "fields": [
+          { "name": "a", "data_type_id": 23 },
+          { "name": "a", "data_type_id": 23 }
+        ],
+        "rows": [
+          {
+            "a": {
+              "json": "\"2\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "core/field-format-is-text",
+      "level": 1,
+      "spec": "5.2",
+      "note": "Values are always text or JSON decoded from text, so format is always \"text\", as Neon's proxy writes it. The client ignores it over HTTP.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT 1::int4 AS id"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "fields": [
+          { "name": "id", "data_type_id": 23, "format": "text" }
         ]
       }
     },
@@ -3784,6 +3837,69 @@
         ]
       },
       "note": "Native mode counterpart of params/bool-scalar."
+    },
+    {
+      "id": "params/array-into-text-binds-the-literal",
+      "level": 1,
+      "spec": "4.4",
+      "note": "A JSON array is rendered as an array literal whatever the parameter's type, as Neon's proxy does, so text receives the literal itself.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT $1::text AS v",
+          "params": [[1, "a b", null]]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "rows": [
+          [
+            {
+              "json": "\"{1,\\\"a b\\\",NULL}\""
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "params/array-into-int4-is-22p02",
+      "level": 1,
+      "spec": "4.4",
+      "note": "The array literal reaches int4's input function, which rejects it. A server must not bind the first element or the count instead.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": true },
+        "body": {
+          "query": "SELECT $1::int4 AS v",
+          "params": [[1, 2]]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "code": "22P02", "severity": "ERROR" }
+      }
+    },
+    {
+      "id": "params/array-into-jsonb-is-22p02",
+      "level": 1,
+      "spec": "4.4",
+      "note": "An array literal is not JSON, so jsonb rejects it, as it does on Neon. A client wanting a JSON array in jsonb sends it as a string.",
+      "request": {
+        "path": "/sql",
+        "headers": { "raw_text": true },
+        "body": {
+          "query": "SELECT $1::jsonb AS v",
+          "params": [[1, 2]]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": { "code": "22P02", "severity": "ERROR" }
+      }
     },
     {
       "id": "params/count-mismatch-returns-error-shape",
