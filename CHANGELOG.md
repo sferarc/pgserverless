@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+### Patch Changes
+
+- d3b9a2c: `pgsconform -single-database` reports the cases that need an unresolvable host as not applicable, in their own `not_applicable` count per level and list in the report, and a level with only those left over is still claimed. A server that serves one database resolves every Host to it, so it had no host to pass to `-unresolvable-host`, the case was skipped, and such a server could no longer claim level 4. The flag cannot be combined with `-unresolvable-host`, and a server run without it still has to refuse an unresolvable host.
+- 0b3584b: SPEC.md 0.4.0 settles Appendix B items 1 and 5 and the binding of a JSON array to a non-array parameter, each as Neon's proxy behaves: an object-mode row keeps one member per column even when names repeat, a field's `format` is always `"text"`, and a JSON array binds as an array literal whatever the parameter's type. The reference implementation already behaved this way. The corpus gains five cases, and `pgsconform` checks a field's `format` when a case lists it.
+- f8aa0d8: SPEC.md 0.4.1 says an array element's quoting escapes only `"` and `\`, so a control character is written as itself, and a new Appendix C records that Neon's proxy JSON-escapes string array elements instead, which turns a newline into the letter `n`. The corpus gains `params/control-character-in-text-array-element`. The reference implementation already behaved this way.
+
 ## 0.7.0
 
 ### Minor Changes
