@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3
+
+### Patch Changes
+
+- 7e67e9f: SPEC.md 0.5.0 requires a statement that starts a COPY to or from the client to be answered 400 at once, and recommends SQLSTATE `0A000`, which Neon's proxy does not send. A corpus case may now carry `answered_within_ms`, which `pgsconform` fails when the server has not answered in time, and three new cases use it so a server that waits for its timeout or answers 200 fails. The reference implementation already behaves this way.
+
 ## 0.7.2
 
 ### Patch Changes
