@@ -160,7 +160,10 @@
           "description": "The server must have answered, body included, within this many milliseconds of the request being sent. Used where SPEC.md requires an answer at once rather than one at the server's request timeout."
         },
         "command": { "type": "string" },
-        "row_count": { "type": ["integer", "null"] },
+        "row_count": {
+          "type": ["integer", "null"],
+          "description": "The rowCount the result must carry. null requires a JSON null, which a tag with no count gives, and an integer requires that number; either fails a result without the member."
+        },
         "row_as_array": { "type": "boolean" },
         "fields": {
           "type": "array",

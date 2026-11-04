@@ -167,7 +167,7 @@ type expectation struct {
 	StatusClass string           `json:"status_class"`
 	WithinMS    int              `json:"answered_within_ms"`
 	Command     *string          `json:"command"`
-	RowCount    *int             `json:"row_count"`
+	RowCount    json.RawMessage  `json:"row_count"`
 	RowAsArray  *bool            `json:"row_as_array"`
 	Fields      []expectedField  `json:"fields"`
 	Rows        json.RawMessage  `json:"rows"`
@@ -650,10 +650,8 @@ func checkResult(exp expectation, got map[string]json.RawMessage, loose bool) st
 		}
 	}
 	if exp.RowCount != nil {
-		var n int
-		_ = json.Unmarshal(got["rowCount"], &n)
-		if n != *exp.RowCount {
-			return fmt.Sprintf("rowCount: want %d, got %d", *exp.RowCount, n)
+		if p := checkRowCount(exp.RowCount, got["rowCount"]); p != "" {
+			return p
 		}
 	}
 	if exp.RowAsArray != nil {
@@ -677,6 +675,27 @@ func checkResult(exp expectation, got map[string]json.RawMessage, loose bool) st
 		if p := checkResults(exp.Results, got["results"], loose); p != "" {
 			return p
 		}
+	}
+	return ""
+}
+
+// checkRowCount tells null from 0: a server answering 0 for a tag with no count, or reading INSERT's OID as the count, must fail.
+func checkRowCount(want, got json.RawMessage) string {
+	if got == nil {
+		return fmt.Sprintf("rowCount: want %s, got no rowCount member", want)
+	}
+	if string(want) == "null" {
+		if string(got) != "null" {
+			return fmt.Sprintf("rowCount: want null, got %s", got)
+		}
+		return ""
+	}
+	var w, n *int64
+	if err := json.Unmarshal(want, &w); err != nil || w == nil {
+		return fmt.Sprintf("corpus case is malformed: row_count %s", want)
+	}
+	if err := json.Unmarshal(got, &n); err != nil || n == nil || *n != *w {
+		return fmt.Sprintf("rowCount: want %d, got %s", *w, got)
 	}
 	return ""
 }

@@ -62,6 +62,8 @@ An error case can be tolerant the same way. Where the SQLSTATE depends on how a 
 
 An error case may also check the text. `error.message_contains` must appear in the error's `message`, compared case-sensitively, and each string in `error.must_not_contain` must appear nowhere in the response body, read both as sent and with its JSON strings decoded. That second check is how a case shows a connection string is not leaked in an error (spec section 7.3).
 
+`row_count` tells null from zero. `null` requires the result's `rowCount` to be JSON null, which a command tag with no count gives (spec section 5.1), and an integer requires that number as a JSON number. Either fails a result without a `rowCount` member.
+
 A case may bound the time to answer. Where the spec requires a refusal at once, the case carries `answered_within_ms`, and the harness fails it when the full response has not arrived by then. A server that waits for its own request timeout and then answers with the right status still fails.
 
 A case may check what its request left behind. `then` holds a second request and its own `expect`, which the harness sends to the same server once the first request has met its expectation, and the case passes only when both do. That is how a case shows a failed batch persisted nothing (spec sections 7.2 and 8), which no single response can show.

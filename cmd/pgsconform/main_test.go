@@ -163,6 +163,40 @@ func TestCheckFieldsFormat(t *testing.T) {
 	}
 }
 
+func TestCheckResultRowCount(t *testing.T) {
+	tests := []struct {
+		name   string
+		expect string
+		body   string
+		ok     bool
+	}{
+		{"null is null", `{"row_count":null}`, `{"rowCount":null}`, true},
+		{"null is not 0", `{"row_count":null}`, `{"rowCount":0}`, false},
+		{"null needs the member", `{"row_count":null}`, `{}`, false},
+		{"count matches", `{"row_count":1}`, `{"rowCount":1}`, true},
+		{"0 is not null", `{"row_count":0}`, `{"rowCount":null}`, false},
+		{"0 needs the member", `{"row_count":0}`, `{}`, false},
+		{"0 is not a string", `{"row_count":0}`, `{"rowCount":"0"}`, false},
+		{"OID read as the count", `{"row_count":1}`, `{"rowCount":0}`, false},
+		{"unchecked", `{}`, `{"rowCount":"anything"}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var exp expectation
+			if err := json.Unmarshal([]byte(tt.expect), &exp); err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tt.body), &got); err != nil {
+				t.Fatal(err)
+			}
+			if msg := checkResult(exp, got, false); (msg == "") != tt.ok {
+				t.Fatalf("checkResult(%s) against %s = %q, want ok=%v", tt.body, tt.expect, msg, tt.ok)
+			}
+		})
+	}
+}
+
 func TestCheckErrorCodes(t *testing.T) {
 	exp := &expectedError{Codes: []string{"22021", "08P01"}}
 	tests := []struct {

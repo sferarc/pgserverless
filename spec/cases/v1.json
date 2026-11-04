@@ -215,6 +215,52 @@
       "expect": {
         "status": 200,
         "command": "",
+        "row_count": null,
+        "rows": []
+      }
+    },
+    {
+      "id": "core/insert-row-count-follows-the-oid",
+      "level": 1,
+      "spec": "5.1",
+      "fixture": "scalars",
+      "note": "PostgreSQL tags an INSERT as INSERT 0 n, the 0 being the OID PostgreSQL no longer assigns, and rowCount is n. The upsert hits the fixture's row and writes back the same id, so it changes nothing. A server reading the second word as the count answers 0.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "query": "INSERT INTO cf_scalars (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "INSERT",
+        "row_count": 1,
+        "rows": []
+      }
+    },
+    {
+      "id": "core/tag-without-a-count-has-null-row-count",
+      "level": 1,
+      "spec": "5.1",
+      "note": "No fixture needed. PostgreSQL tags the statement CREATE TABLE, which carries no count, so command is its first word and rowCount is null, not 0. ON COMMIT DROP leaves nothing behind on a pooled upstream.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "query": "CREATE TEMP TABLE cf_tag_without_count (n int4) ON COMMIT DROP"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "CREATE",
+        "row_count": null,
         "rows": []
       }
     },
