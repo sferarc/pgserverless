@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.6
+
+### Patch Changes
+
+- 4099269: A `POST /sql` body carrying both a string `query` and `queries` now runs `query` as a single statement and ignores `queries` unread, as Neon's proxy reads it. It used to run the batch. SPEC.md 0.6.0 makes this the 4.3 rule, and the corpus checks it in `core/string-query-wins-over-queries`.
+
 ## 0.7.5
 
 ### Patch Changes
