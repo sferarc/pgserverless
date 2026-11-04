@@ -237,7 +237,7 @@ For a parity run, point `DATABASE_URL` at a Neon database and compare the two re
 
 ## Contributing
 
-Issues and pull requests are welcome here. `go test ./...` runs the unit and conformance tests with no database; the driver suite above needs one.
+Issues and pull requests are welcome here. `go test ./...` runs the unit and conformance tests with no database; the driver suite above needs one. [AGENTS.md](./AGENTS.md) lists the commands, the layout and the rules a change has to keep.
 
 Used in production at [PgBeam](https://pgbeam.com).
 
