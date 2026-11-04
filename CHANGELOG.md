@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+### Patch Changes
+
+- b9590c7: `pgsconform` now checks `row_count` strictly. `null` requires a JSON null, where it used to leave `rowCount` unchecked, and an integer requires that JSON number, where `0` used to pass a server that sent null, a string or no `rowCount` at all. Two level 1 cases pin SPEC 5.1's command tags beyond `SELECT n`: `core/insert-row-count-follows-the-oid` (an `INSERT 0 1` answers 1, not the OID) and `core/tag-without-a-count-has-null-row-count` (`CREATE TABLE` answers `command` `CREATE` and a null `rowCount`). `core/empty-query-is-an-empty-result` now checks its null `rowCount`. The reference implementation already passes.
+
 ## 0.8.0
 
 ### Minor Changes
