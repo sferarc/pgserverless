@@ -2,6 +2,10 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.7.0 (draft)
+
+- Section 9 requires a WebSocket upgrade to be accepted on any path, as Neon's proxy does, with `/v2` as the default the client derives. The client takes the path from its `wsProxy` setting, so a server that upgraded only on `/v2` conformed to 0.6.0, failed a client configured for `/v1`, and does not conform to this version. Section 2 says the same. The corpus checks it in `websocket/upgrade-on-any-path`, the schema lets a case use `/v1`, and the corpus `version` stays 2, since the case is new.
+
 ## 0.6.0 (draft)
 
 - Section 4.3 requires a body carrying both a string `query` and `queries` to run `query` as a single statement and ignore `queries` unread, as Neon's proxy does. It used to recommend batch mode, so a server following that conformed to 0.5.0 and does not conform to this version, the reference implementation included before this change. The corpus checks it in `core/string-query-wins-over-queries`, and its `version` stays 2, since the case is new.

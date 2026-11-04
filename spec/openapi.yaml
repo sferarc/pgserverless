@@ -1,16 +1,16 @@
 openapi: 3.0.3
 info:
   title: Postgres serverless HTTP and WebSocket protocol
-  version: "0.6.0"
+  version: "0.7.0"
   description: |
     OpenAPI description of the protocol specified in SPEC.md, at the same
     version. SPEC.md is the normative text; where this file and SPEC.md differ,
     SPEC.md wins and this file is the one to fix.
 
-    | Transport | Path         | Carries                                                   |
-    | --------- | ------------ | --------------------------------------------------------- |
-    | HTTP      | `POST /sql`  | One request, one or more statements, JSON in and out      |
-    | WebSocket | `GET /v2`    | The PostgreSQL frontend/backend protocol, tunnelled       |
+    | Transport | Path                             | Carries                                              |
+    | --------- | -------------------------------- | ---------------------------------------------------- |
+    | HTTP      | `POST /sql`                      | One request, one or more statements, JSON in and out |
+    | WebSocket | `GET` on any path, default `/v2` | The PostgreSQL frontend/backend protocol, tunnelled  |
 
     Every header below is accepted under a vendor-prefixed spelling
     (`Neon-Connection-String`) and an unprefixed one (`Connection-String`).
@@ -129,6 +129,9 @@ paths:
         protocol in binary frames, as a continuous stream rather than one
         message per frame (SPEC.md 9). The server SHOULD negotiate the `pg`
         subprotocol.
+
+        `/v2` is the default path. The client's `wsProxy` setting chooses the
+        path, so a server MUST accept the upgrade on any path (SPEC.md 9).
 
         Admission runs before the upgrade. A multi-tenant server resolves the
         target from the `Host` header, and a target it cannot resolve is

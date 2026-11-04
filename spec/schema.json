@@ -99,7 +99,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "enum": ["/sql", "/v2"]
+          "enum": ["/sql", "/v1", "/v2"]
         },
         "method": {
           "type": "string",

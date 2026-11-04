@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.6.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.7.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -40,11 +40,11 @@ Two transports carry the same intent and share almost nothing else.
 | Transport | Path | Carries | Used by |
 | --- | --- | --- | --- |
 | HTTP | `POST /sql` | One request, one or more statements, JSON in and out | one-shot queries and non-interactive transactions |
-| WebSocket | `GET /v2` | The PostgreSQL frontend/backend protocol, tunnelled | session-oriented clients, interactive transactions, `LISTEN`, cursors |
+| WebSocket | `GET` with a WebSocket upgrade, on any path | The PostgreSQL frontend/backend protocol, tunnelled | session-oriented clients, interactive transactions, `LISTEN`, cursors |
 
 The two are independent. A server MAY implement HTTP only. A client that needs sessions MUST use WebSocket, because the HTTP transport has no session: each request is executed and the connection is released.
 
-The default paths are what clients derive when not configured otherwise: `https://<host>/sql` for HTTP, and `<host>/v2` for WebSocket.
+The default paths are what clients derive when not configured otherwise: `https://<host>/sql` for HTTP, and `<host>/v2` for WebSocket. The client's WebSocket path is configurable, so section 9 requires the upgrade on any path.
 
 ## 3. Admission
 
@@ -346,7 +346,9 @@ A successful batch returns HTTP 200 and one object, `{"results": [...]}`, holdin
 
 ## 9. The WebSocket transport
 
-`GET /v2` upgrades to a WebSocket carrying the PostgreSQL frontend/backend protocol in **binary frames**. The server SHOULD negotiate the `pg` subprotocol.
+A `GET` carrying a WebSocket upgrade upgrades to a WebSocket carrying the PostgreSQL frontend/backend protocol in **binary frames**. The server SHOULD negotiate the `pg` subprotocol.
+
+**The upgrade MUST be accepted on any path**, not only on `/v2`. The client builds the WebSocket URL from its `wsProxy` setting, which a user may point at `/v1`, at `/` or at a path of their own, and Neon's proxy upgrades a WebSocket request whatever its path. `/v2` is only the default. A request on another path that is not a WebSocket upgrade is outside this protocol, and the server MAY answer it however it likes.
 
 There is no TLS SNI on this path, so a multi-tenant server resolves the target from the HTTP `Host` header of the upgrade request. A target that cannot be resolved MUST be refused **before** the upgrade, with an ordinary HTTP error response.
 

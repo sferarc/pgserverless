@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.6.0",
+  "spec_version": "0.7.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -692,6 +692,25 @@
           "upgraded": true,
           "ssl_request_declined": true,
           "gssenc_request_declined": true
+        }
+      }
+    },
+    {
+      "id": "websocket/upgrade-on-any-path",
+      "level": 4,
+      "spec": "9",
+      "requires": "websocket",
+      "note": "The client builds the WebSocket URL from its wsProxy setting, and a user may point it at /v1 rather than the default /v2. Declining the SSLRequest shows the upgraded connection is the PostgreSQL tunnel, not some other WebSocket service on that path.",
+      "request": {
+        "path": "/v1",
+        "method": "GET"
+      },
+      "expect": {
+        "status": 101,
+        "websocket": {
+          "upgraded": true,
+          "subprotocol": "pg",
+          "ssl_request_declined": true
         }
       }
     },
