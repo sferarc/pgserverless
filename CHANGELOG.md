@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2
+
+### Patch Changes
+
+- b0a68b1: The module root has an `llms.txt` that links the README, the server's README, the spec files and the Go package reference, and the README and package documentation now link `spec/openapi.yaml`, which neither linked before.
+
 ## 0.8.1
 
 ### Patch Changes
