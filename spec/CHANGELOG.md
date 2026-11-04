@@ -2,6 +2,10 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.6.0 (draft)
+
+- Section 4.3 requires a body carrying both a string `query` and `queries` to run `query` as a single statement and ignore `queries` unread, as Neon's proxy does. It used to recommend batch mode, so a server following that conformed to 0.5.0 and does not conform to this version, the reference implementation included before this change. The corpus checks it in `core/string-query-wins-over-queries`, and its `version` stays 2, since the case is new.
+
 ## 0.5.0 (draft)
 
 - Section 7.2 requires a statement that starts a COPY to or from the client (`COPY ... FROM STDIN`, `COPY ... TO STDOUT`) to be answered 400 at once, never by waiting for the request timeout and never by a 200 with the copied rows dropped, and recommends `code` `0A000`, which Neon's proxy does not send. A server that forwarded the copy response unhandled conformed to 0.4.1 and does not conform to this version, the reference implementation included before its 0.7.2 release.

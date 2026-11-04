@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Postgres serverless HTTP and WebSocket protocol
-  version: "0.5.0"
+  version: "0.6.0"
   description: |
     OpenAPI description of the protocol specified in SPEC.md, at the same
     version. SPEC.md is the normative text; where this file and SPEC.md differ,
@@ -51,8 +51,8 @@ paths:
       summary: Execute one statement or a batch
       description: |
         A body with `query` runs one statement. A body with `queries` runs a
-        batch as one transaction (SPEC.md 8); the presence of `queries` selects
-        batch mode.
+        batch as one transaction (SPEC.md 8). A string `query` wins over
+        `queries`, as Neon's proxy reads it (SPEC.md 4.3).
 
         `Raw-Text-Output: true` selects raw text mode, where every value is the
         PostgreSQL text form as a JSON string (SPEC.md 5.3). Without it the
@@ -309,7 +309,8 @@ components:
     SQLRequest:
       description: |
         `query` for one statement, or `queries` for a batch. A body carrying
-        both is not produced by any client; `queries` selects batch mode.
+        both is not produced by any client; a string `query` runs and
+        `queries` is ignored unread (SPEC.md 4.3).
       type: object
       properties:
         query:

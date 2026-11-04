@@ -1,6 +1,7 @@
 package pgserverless
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
@@ -418,13 +419,10 @@ func writeAdmissionError(w http.ResponseWriter, err error) {
 // serveSQL keeps one function per decision: this one decides whether the
 // request is well formed, serveSQL decides what to do with a well formed one.
 func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
-	// Each item's query is decoded as a pointer, so an item without one is told apart from an empty one.
+	// queries is decoded only in batch mode: Neon skips it unread when query is a string.
 	var body struct {
 		SQLRequest
-		Queries []struct {
-			QueryItem
-			Query *string `json:"query"`
-		} `json:"queries"`
+		Queries json.RawMessage `json:"queries"`
 	}
 	dec := json.NewDecoder(r.Body)
 	// A float64 rounds an integer past 2^53, so a bigint id sent as a JSON number bound as a different id.
@@ -447,25 +445,45 @@ func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 	}
 	req := body.SQLRequest
 
-	isBatch := body.Queries != nil
+	// Neon parses the body as a single statement before a batch, so a string query wins over queries.
 	// An empty query is valid: Neon answers it 200 with no fields and no command.
-	if !isBatch && req.Query == nil {
+	if req.Query != nil {
+		return &req, nil
+	}
+	if len(body.Queries) == 0 || string(body.Queries) == "null" {
 		return nil, ErrMissingQuery
 	}
-	if isBatch && len(body.Queries) > MaxBatchQueries {
+	items, err := decodeBatchItems(body.Queries)
+	if err != nil {
+		return nil, err
+	}
+	req.Queries = items
+	return &req, nil
+}
+
+func decodeBatchItems(raw json.RawMessage) ([]QueryItem, error) {
+	// Each item's query is decoded as a pointer, so an item without one is told apart from an empty one.
+	var items []struct {
+		QueryItem
+		Query *string `json:"query"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&items); err != nil {
+		return nil, ErrInvalidRequest
+	}
+	if len(items) > MaxBatchQueries {
 		return nil, fmt.Errorf("batch too large: max %d queries", MaxBatchQueries)
 	}
-	if isBatch {
-		req.Queries = make([]QueryItem, len(body.Queries))
-		for i, item := range body.Queries {
-			// Neon refuses such a body with 400; read as "", the item ran as an empty statement and the batch answered 200.
-			if item.Query == nil {
-				return nil, fmt.Errorf("%w in queries[%d]", ErrMissingQuery, i)
-			}
-			req.Queries[i] = QueryItem{Query: *item.Query, Params: item.Params, ArrayMode: item.ArrayMode}
+	queries := make([]QueryItem, len(items))
+	for i, item := range items {
+		// Neon refuses such a body with 400; read as "", the item ran as an empty statement and the batch answered 200.
+		if item.Query == nil {
+			return nil, fmt.Errorf("%w in queries[%d]", ErrMissingQuery, i)
 		}
+		queries[i] = QueryItem{Query: *item.Query, Params: item.Params, ArrayMode: item.ArrayMode}
 	}
-	return &req, nil
+	return queries, nil
 }
 
 // requestArrayMode lets a single query's arrayMode override the header either way, as Neon and batchArrayMode do.

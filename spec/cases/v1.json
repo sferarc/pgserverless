@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.5.0",
+  "spec_version": "0.6.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -216,6 +216,38 @@
         "status": 200,
         "command": "",
         "rows": []
+      }
+    },
+    {
+      "id": "core/string-query-wins-over-queries",
+      "level": 1,
+      "spec": "4.3",
+      "note": "No fixture needed. Neon's proxy reads the body as a single statement before a batch, so a string query runs and queries is ignored. A server that lets queries select batch mode answers a results array and runs the other statement.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'single' AS v",
+          "queries": [
+            {
+              "query": "SELECT 'batch' AS v"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "SELECT",
+        "row_count": 1,
+        "rows": [
+          {
+            "v": {
+              "json": "\"single\""
+            }
+          }
+        ]
       }
     },
     {
