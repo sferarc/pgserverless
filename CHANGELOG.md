@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.7
+
+### Patch Changes
+
+- 5150e50: SPEC.md 0.7.0 requires a WebSocket upgrade to be accepted on any path, as Neon's proxy does, with `/v2` only the default; it used to name `GET /v2` alone, so a server built from it failed a client whose `wsProxy` points at `/v1`. The corpus gains `websocket/upgrade-on-any-path`. The reference implementation already behaved this way.
+
 ## 0.7.6
 
 ### Patch Changes
