@@ -8,7 +8,7 @@ A Cloudflare Worker, a Vercel Edge Function or a Deno Deploy isolate cannot open
 go get github.com/sferarc/pgserverless
 ```
 
-The protocol itself is specified in [`spec`](./spec): [SPEC.md](./spec/SPEC.md) is the normative text, and [cases/v1.json](./spec/cases/v1.json) is a language-neutral conformance corpus that [`cmd/pgsconform`](./cmd/pgsconform) runs against any server over the network. This package is one implementation of that spec, and the spec is versioned separately from it.
+The protocol itself is specified in [`spec`](./spec): [SPEC.md](./spec/SPEC.md) is the normative text, [openapi.yaml](./spec/openapi.yaml) describes the same protocol for OpenAPI tooling, and [cases/v1.json](./spec/cases/v1.json) is a language-neutral conformance corpus that [`cmd/pgsconform`](./cmd/pgsconform) runs against any server over the network. This package is one implementation of that spec, and the spec is versioned separately from it.
 
 ## Quick start
 

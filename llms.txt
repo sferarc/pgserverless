@@ -1,0 +1,21 @@
+# pgserverless
+
+> Go library and server that put PostgreSQL behind `POST /sql` and a WebSocket tunnel, the request and response shapes the `@neondatabase/serverless` driver sends, plus a written protocol spec and a conformance corpus that checks any server over the network.
+
+Import path `github.com/sferarc/pgserverless`. `NewHTTPHandler` serves both transports from a plain `http.Handler`; one admission function decides which database a request reaches. `cmd/pgserverless` is a ready server in front of one database. SPEC.md is the normative text; openapi.yaml describes the same protocol, and SPEC.md wins where the two differ.
+
+When not to use: there is no connection pooling (each HTTP request opens and closes its own database connection) and no raw TCP listener for the PostgreSQL wire protocol.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/sferarc/pgserverless/main/README.md): quick start, driver compatibility, value coercion rules, known behaviour
+- [Go package reference](https://pkg.go.dev/github.com/sferarc/pgserverless): API docs for the library
+- [cmd/pgserverless README](https://raw.githubusercontent.com/sferarc/pgserverless/main/cmd/pgserverless/README.md): run the server with Go or Docker, its environment variables, pointing a client at it
+
+## Specification
+
+- [SPEC.md](https://raw.githubusercontent.com/sferarc/pgserverless/main/spec/SPEC.md): the protocol specification, the only normative text
+- [openapi.yaml](https://raw.githubusercontent.com/sferarc/pgserverless/main/spec/openapi.yaml): OpenAPI description of `POST /sql` and the WebSocket upgrade
+- [CONFORMANCE.md](https://raw.githubusercontent.com/sferarc/pgserverless/main/spec/CONFORMANCE.md): conformance levels, the case format and the report `cmd/pgsconform` writes
+- [schema.json](https://raw.githubusercontent.com/sferarc/pgserverless/main/spec/schema.json): JSON Schema for the conformance corpus
+- [cases/v1.json](https://raw.githubusercontent.com/sferarc/pgserverless/main/spec/cases/v1.json): the conformance corpus, one HTTP or WebSocket exchange per case

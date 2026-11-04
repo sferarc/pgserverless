@@ -17,6 +17,17 @@
 //	)
 //	http.ListenAndServe(":4000", h)
 //
+// # Specification
+//
+// The protocol this package serves is written down separately from it, in the
+// module's spec directory. SPEC.md is the normative text, openapi.yaml is an
+// OpenAPI description of the same protocol, and cases/v1.json is a conformance
+// corpus that cmd/pgsconform runs against any server over the network:
+//
+//   - https://github.com/sferarc/pgserverless/blob/main/spec/SPEC.md
+//   - https://github.com/sferarc/pgserverless/blob/main/spec/openapi.yaml
+//   - https://github.com/sferarc/pgserverless/blob/main/spec/cases/v1.json
+//
 // # Scope
 //
 // Both transports. POST /sql carries one request and one response, and is what
