@@ -26,20 +26,28 @@ func tenTextRows() pgfake.Result {
 }
 
 func cappedServers(pg *pgfake.PG, maxBytes int64) map[string]http.Handler {
+	return admittedCapServers(pg, maxBytes, 0)
+}
+
+// admittedCapServers caps the handler at handlerCap and has its Admission set
+// Upstream.MaxResponseBytes to requestCap.
+func admittedCapServers(pg *pgfake.PG, handlerCap, requestCap int64) map[string]http.Handler {
 	static := StaticUpstream(pg.Addr())
 	e := echo.New()
 	NewHandler(func(c echo.Context) (Upstream, error) {
 		up, err := static(c)
 		up.InsecureSkipVerify = true
+		up.MaxResponseBytes = requestCap
 		return up, err
-	}, WithMaxResponseBytes(maxBytes)).Register(e)
+	}, WithMaxResponseBytes(handlerCap)).Register(e)
 
 	staticHTTP := StaticHTTPUpstream(pg.Addr())
 	std := NewHTTPHandler(func(r *http.Request) (Upstream, error) {
 		up, err := staticHTTP(r)
 		up.InsecureSkipVerify = true
+		up.MaxResponseBytes = requestCap
 		return up, err
-	}, WithHTTPMaxResponseBytes(maxBytes))
+	}, WithHTTPMaxResponseBytes(handlerCap))
 
 	return map[string]http.Handler{"echo": e, "net/http": std}
 }
@@ -233,4 +241,51 @@ func TestResponsesAreUncappedByDefault(t *testing.T) {
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		})
 	}
+}
+
+func TestAdmissionOverridesTheResponseCap(t *testing.T) {
+	for name, tc := range map[string]struct {
+		handlerCap, requestCap int64
+		status                 int
+	}{
+		"lowers the handler's":     {tenTextRowsBytes, tenTextRowsBytes - 1, http.StatusInsufficientStorage},
+		"raises the handler's":     {tenTextRowsBytes - 1, tenTextRowsBytes, http.StatusOK},
+		"caps an uncapped one":     {0, tenTextRowsBytes - 1, http.StatusInsufficientStorage},
+		"negative lifts the cap":   {tenTextRowsBytes - 1, -1, http.StatusOK},
+		"zero keeps the handler's": {tenTextRowsBytes - 1, 0, http.StatusInsufficientStorage},
+	} {
+		pg := pgfake.New(t)
+		pg.SetResult("SELECT v FROM t", tenTextRows())
+		for server, h := range admittedCapServers(pg, tc.handlerCap, tc.requestCap) {
+			t.Run(name+"/"+server, func(t *testing.T) {
+				rec := doSQL(h, `{"query":"SELECT v FROM t"}`, nil)
+
+				require.Equal(t, tc.status, rec.Code, rec.Body.String())
+				if tc.status == http.StatusInsufficientStorage {
+					assert.Equal(t, "response is too large (max is 209 bytes)", decodeError(t, rec).Message)
+				}
+			})
+		}
+	}
+}
+
+// A capped governed batch runs inside the module's own BEGIN so a 507 rolls it
+// back; with the cap lifted for the request it runs as one implicit block again.
+func TestLiftedCapGovernedBatchOpensNoTransaction(t *testing.T) {
+	pg := writeAfterSelectPG(t)
+	e := echo.New()
+	static := StaticUpstream(pg.Addr())
+	NewHandler(func(c echo.Context) (Upstream, error) {
+		up, err := static(c)
+		up.InsecureSkipVerify = true
+		up.RawTextSimpleProtocol = true
+		up.MaxResponseBytes = -1
+		return up, err
+	}, WithStatementCounter(semicolonCount), WithMaxResponseBytes(tenTextRowsBytes-1)).Register(e)
+
+	rec := doSQL(e, writeAfterSelect, driverHeaders)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Empty(t, pg.LastBegin())
+	assert.Equal(t, []string{"INSERT INTO log VALUES (1)"}, pg.CommittedWrites())
 }

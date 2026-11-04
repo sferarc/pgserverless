@@ -85,6 +85,8 @@ type Upstream struct {
 	// It is ignored unless the handler has a statement counter
 	// (WithStatementCounter).
 	RawTextSimpleProtocol bool
+	// MaxResponseBytes overrides the handler's response cap (WithMaxResponseBytes) for this request: zero keeps it, a negative value lifts it.
+	MaxResponseBytes int64
 }
 
 // TLS modes for Upstream.TLSMode.
@@ -166,7 +168,7 @@ func WithStatementCounter(fn func(sql string) (int, error)) Option {
 // WithMaxResponseBytes fails a POST /sql response with 507 once the rows
 // PostgreSQL sent for it, framing included, pass n bytes, as Neon does, so one
 // cross join cannot exhaust the server's memory. Zero, the default, leaves
-// responses uncapped.
+// responses uncapped. Upstream.MaxResponseBytes overrides it per request.
 func WithMaxResponseBytes(n int64) Option {
 	return func(h *Handler) { h.maxResponseBytes = n }
 }
@@ -381,6 +383,9 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 	}
 	defer conn.Close(context.Background())
 
+	if up.MaxResponseBytes != 0 {
+		maxResponse = up.MaxResponseBytes
+	}
 	budget := &responseBudget{max: maxResponse}
 	switch {
 	case req.Queries != nil && simple:
