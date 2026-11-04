@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- 9df54d2: `Upstream.MaxResponseBytes` lets an Admission override the `POST /sql` response cap for one request: zero keeps the handler's cap, a positive value replaces it and a negative value lifts it. A host can now cap every session and exempt the few whose own limits make the cap redundant.
+
 ## 0.7.7
 
 ### Patch Changes
