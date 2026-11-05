@@ -73,6 +73,7 @@ With `PGSERVERLESS_AUTH_TOKEN` set, every request needs `Authorization: Bearer <
 | `PGSERVERLESS_ALLOW_REMOTE` | `false` | `true` lets the server listen beyond loopback with no token. `PGSERVERLESS_ALLOW_UNAUTHENTICATED=true` is read the same way. |
 | `PGSERVERLESS_CORS_ORIGINS` | none | Comma separated origins, or `*`, allowed to call `POST /sql` from a browser. Unset, no cross-origin page can read a response. With no token, these are also the only other origins whose browser WebSocket upgrades are accepted. |
 | `PGSERVERLESS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `PGSERVERLESS_LOG_FORMAT` | `text` | `text` for `slog` key=value lines, or `json` for one JSON object per line. Logs go to stderr. |
 
 TLS to the database follows `DATABASE_URL`'s `sslmode` as libpq reads it:
 

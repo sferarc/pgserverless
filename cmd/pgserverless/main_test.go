@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/x509"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sferarc/pgserverless"
 	"github.com/sferarc/pgserverless/pgfake"
@@ -411,6 +415,54 @@ func TestRunRefusesAnUnknownLogLevel(t *testing.T) {
 	if err := run(); err == nil || !strings.Contains(err.Error(), "PGSERVERLESS_LOG_LEVEL") {
 		t.Errorf("run() = %v, want the log level refused", err)
 	}
+}
+
+func TestLogHandler(t *testing.T) {
+	for _, tc := range []struct{ format, want string }{
+		{"", "level=INFO msg=hello n=1\n"},
+		{"text", "level=INFO msg=hello n=1\n"},
+		{" JSON ", `{"level":"INFO","msg":"hello","n":1}` + "\n"},
+	} {
+		var buf bytes.Buffer
+		h, err := logHandler(tc.format, &buf, slog.LevelInfo)
+		if err != nil {
+			t.Fatalf("logHandler(%q) error: %v", tc.format, err)
+		}
+		slog.New(dropTime{h}).Info("hello", "n", 1)
+		if got := buf.String(); got != tc.want {
+			t.Errorf("logHandler(%q) wrote %q, want %q", tc.format, got, tc.want)
+		}
+	}
+	if _, err := logHandler("logfmt", io.Discard, slog.LevelInfo); err == nil || !strings.Contains(err.Error(), "text or json") {
+		t.Errorf(`logHandler("logfmt") = %v, want a refusal naming text and json`, err)
+	}
+}
+
+func TestLogHandlerKeepsTheLevel(t *testing.T) {
+	var buf bytes.Buffer
+	h, err := logHandler("json", &buf, slog.LevelWarn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.New(h).Info("dropped")
+	if buf.Len() != 0 {
+		t.Errorf("json handler at warn wrote an info record: %q", buf.String())
+	}
+}
+
+func TestRunRefusesAnUnknownLogFormat(t *testing.T) {
+	t.Setenv("PGSERVERLESS_LOG_FORMAT", "logfmt")
+	if err := run(); err == nil || !strings.Contains(err.Error(), "PGSERVERLESS_LOG_FORMAT") {
+		t.Errorf("run() = %v, want the log format refused", err)
+	}
+}
+
+// dropTime zeroes each record's time so the handlers leave the time attribute out.
+type dropTime struct{ slog.Handler }
+
+func (d dropTime) Handle(ctx context.Context, r slog.Record) error {
+	r.Time = time.Time{}
+	return d.Handler.Handle(ctx, r)
 }
 
 func TestIsLoopbackHost(t *testing.T) {

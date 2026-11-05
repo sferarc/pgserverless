@@ -12,7 +12,8 @@
 // on those origins call POST /sql; unset, no cross-origin page can read a
 // response. With no token, those origins are also the only foreign ones whose
 // WebSocket upgrades are accepted, and a loopback listener refuses a Host
-// that is not a loopback name. PGSERVERLESS_LOG_LEVEL is debug, info (the default), warn or error.
+// that is not a loopback name. PGSERVERLESS_LOG_LEVEL is debug, info (the default), warn or error,
+// and PGSERVERLESS_LOG_FORMAT is text (the default) or json.
 package main
 
 import (
@@ -21,6 +22,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -49,7 +51,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	handler, err := logHandler(os.Getenv("PGSERVERLESS_LOG_FORMAT"), os.Stderr, level)
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(slog.New(handler))
 
 	addr := os.Getenv("PGSERVERLESS_ADDR")
 	if addr == "" {
@@ -309,6 +315,17 @@ func logLevel(s string) (slog.Level, error) {
 		return slog.LevelError, nil
 	}
 	return 0, fmt.Errorf("PGSERVERLESS_LOG_LEVEL %q is not debug, info, warn or error", s)
+}
+
+func logHandler(format string, w io.Writer, level slog.Level) (slog.Handler, error) {
+	opts := &slog.HandlerOptions{Level: level}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "text":
+		return slog.NewTextHandler(w, opts), nil
+	case "json":
+		return slog.NewJSONHandler(w, opts), nil
+	}
+	return nil, fmt.Errorf("PGSERVERLESS_LOG_FORMAT %q is not text or json", format)
 }
 
 // isLoopback reports whether addr binds only to the loopback interface.
