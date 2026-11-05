@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.1
+
+### Patch Changes
+
+- 766347a: The reference server's container image (`cmd/pgserverless/Dockerfile`) compiles Go on the build host's own platform and cross-compiles for the target, so a multi-platform `docker buildx build` no longer compiles the linux/arm64 binary under emulation. A plain `docker build` produces the same image as before.
+
 ## 0.9.0
 
 ### Minor Changes
