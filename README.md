@@ -199,7 +199,7 @@ go run ./cmd/pgsconform -cases spec/cases/v1.json \
   -report report.json
 ```
 
-[spec/CONFORMANCE.md](./spec/CONFORMANCE.md) explains the case format, the levels and the report.
+It exits 0 when every case passed, 1 when a case failed and 2 when the run could not start (flags, fixtures, an unreachable server). `-report -` writes the JSON report to stdout and the summary to stderr. [spec/CONFORMANCE.md](./spec/CONFORMANCE.md) explains the case format, the levels and the report.
 
 ## Run the driver conformance suite against your own server
 

@@ -104,6 +104,8 @@ Skipped is a first-class outcome. A report claiming 100% where a third of the ca
 
 An implementation claims a level only when that level has zero failures and zero skips. Not applicable cases do not block a claim, and the report lists each one under `not_applicable` so a reader sees what was declared rather than run. The report is what an implementation publishes; the point is that "compatible" stops being a marketing word and becomes a number someone else can reproduce.
 
+`pgsconform` writes the report to the file `-report` names, or to stdout with `-report -`, in which case its human summary goes to stderr. It exits 0 when every case that ran passed, 1 when one or more cases failed, and 2 on a usage or setup error (bad flags, an unreadable corpus, fixtures that did not apply, a server under test that does not answer HTTP). Exit 2 means no case was judged and no report was written, so a caller can tell a failing server from a broken run.
+
 ## 6. What this cannot check
 
 Worth writing down so the corpus is not oversold.

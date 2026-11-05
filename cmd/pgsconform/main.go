@@ -12,6 +12,11 @@
 //	           -server http://localhost:4000 \
 //	           -dsn postgres://user:pass@localhost/db \
 //	           -report report.json
+//
+// It exits 0 when every case that ran passed, 1 when one or more failed, and 2
+// on a usage or setup error (flags, corpus, fixtures, an unreachable server),
+// in which case no case was judged. -report - writes the JSON report to stdout
+// and the summary to stderr.
 package main
 
 import (
@@ -37,45 +42,70 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// Exit codes, so a caller can tell a failing server from a run that never judged it.
+const (
+	exitPassed = 0
+	exitFailed = 1
+	exitSetup  = 2
+)
+
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "pgsconform: %v\n", err)
-		os.Exit(1)
-	}
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, applyFixtures))
 }
 
-func run() error {
+// fixtureApplier prepares the database the cases assume and returns its server version.
+type fixtureApplier func(ctx context.Context, dsn string, c *corpus) (string, error)
+
+func run(args []string, stdout, stderr io.Writer, apply fixtureApplier) int {
+	fs := flag.NewFlagSet("pgsconform", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	var (
-		casesPath  = flag.String("cases", "spec/cases/v1.json", "corpus file")
-		serverURL  = flag.String("server", "http://localhost:4000", "base URL of the server under test")
-		dsn        = flag.String("dsn", "", "PostgreSQL connection string used to apply fixtures")
-		reportPath = flag.String("report", "", "write the JSON report here (default stdout summary only)")
-		implName   = flag.String("impl", "pgserverless-go", "implementation name recorded in the report")
-		connString = flag.String("client-conn", "", "connection string sent as the request header (default: -dsn)")
-		badHost    = flag.String("unresolvable-host", "", "a Host the server under test resolves to no target (cases needing one are skipped without it)")
-		refusing   = flag.String("refusing-server", "", "base URL of an instance of the server under test that refuses admission to every request (cases needing one are skipped without it)")
-		singleDB   = flag.Bool("single-database", false, "the server under test serves one database and resolves every Host to it, so cases needing an unresolvable host are reported not applicable")
+		casesPath  = fs.String("cases", "spec/cases/v1.json", "corpus file")
+		serverURL  = fs.String("server", "http://localhost:4000", "base URL of the server under test")
+		dsn        = fs.String("dsn", "", "PostgreSQL connection string used to apply fixtures")
+		reportPath = fs.String("report", "", "write the JSON report to this file, or to stdout with the summary on stderr when -")
+		implName   = fs.String("impl", "pgserverless-go", "implementation name recorded in the report")
+		connString = fs.String("client-conn", "", "connection string sent as the request header (default: -dsn)")
+		badHost    = fs.String("unresolvable-host", "", "a Host the server under test resolves to no target (cases needing one are skipped without it)")
+		refusing   = fs.String("refusing-server", "", "base URL of an instance of the server under test that refuses admission to every request (cases needing one are skipped without it)")
+		singleDB   = fs.Bool("single-database", false, "the server under test serves one database and resolves every Host to it, so cases needing an unresolvable host are reported not applicable")
 	)
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitPassed
+		}
+		return exitSetup
+	}
+	setupErr := func(err error) int {
+		fmt.Fprintf(stderr, "pgsconform: %v\n", err)
+		return exitSetup
+	}
+	if fs.NArg() > 0 {
+		return setupErr(fmt.Errorf("unexpected argument %q: every input is a flag", fs.Arg(0)))
+	}
 
 	corpus, err := loadCorpus(*casesPath)
 	if err != nil {
-		return err
+		return setupErr(err)
 	}
 	if *dsn == "" {
-		return errors.New("-dsn is required: the corpus needs a real PostgreSQL to hold its fixtures")
+		return setupErr(errors.New("-dsn is required: the corpus needs a real PostgreSQL to hold its fixtures"))
 	}
 	if *connString == "" {
 		*connString = *dsn
 	}
 	if *singleDB && *badHost != "" {
-		return errors.New("-single-database and -unresolvable-host contradict each other: a server with an unresolvable host serves more than one database")
+		return setupErr(errors.New("-single-database and -unresolvable-host contradict each other: a server with an unresolvable host serves more than one database"))
 	}
 
 	ctx := context.Background()
-	pgVersion, err := applyFixtures(ctx, *dsn, corpus)
+	pgVersion, err := apply(ctx, *dsn, corpus)
 	if err != nil {
-		return fmt.Errorf("apply fixtures: %w", err)
+		return setupErr(fmt.Errorf("apply fixtures: %w", err))
+	}
+	server := strings.TrimRight(*serverURL, "/")
+	if err := checkReachable(ctx, server); err != nil {
+		return setupErr(err)
 	}
 
 	rep := report{
@@ -87,7 +117,7 @@ func run() error {
 	}
 
 	runner := &runner{
-		server:           strings.TrimRight(*serverURL, "/"),
+		server:           server,
 		connString:       *connString,
 		unresolvableHost: *badHost,
 		refusingServer:   strings.TrimRight(*refusing, "/"),
@@ -99,12 +129,29 @@ func run() error {
 	}
 	rep.ClaimedLevels = claimedLevels(rep.Results)
 
-	if err := emit(rep, *reportPath); err != nil {
-		return err
+	if err := emit(rep, *reportPath, stdout, stderr); err != nil {
+		return setupErr(fmt.Errorf("write report: %w", err))
 	}
 	if len(rep.Failures) > 0 {
-		return fmt.Errorf("%d case(s) failed", len(rep.Failures))
+		fmt.Fprintf(stderr, "pgsconform: %d case(s) failed\n", len(rep.Failures))
+		return exitFailed
 	}
+	return exitPassed
+}
+
+// checkReachable sends one plain GET to the server, so a wrong -server is a setup error rather than every case failing; any HTTP answer will do.
+func checkReachable(ctx context.Context, server string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server+"/", nil)
+	if err != nil {
+		return fmt.Errorf("-server %q: %w", server, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("server under test is unreachable: %w", err)
+	}
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -1045,31 +1092,40 @@ type failure struct {
 	Reason string `json:"reason"`
 }
 
-func emit(rep report, path string) error {
+func emit(rep report, path string, stdout, stderr io.Writer) error {
 	out, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		return err
 	}
-	if path != "" {
-		if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil { //nolint:gosec // a report is not a secret
+	out = append(out, '\n')
+	summary := stdout
+	switch path {
+	case "":
+	case "-":
+		if _, err := stdout.Write(out); err != nil {
+			return err
+		}
+		summary = stderr
+	default:
+		if err := os.WriteFile(path, out, 0o644); err != nil { //nolint:gosec // a report is not a secret
 			return err
 		}
 	}
 
-	fmt.Printf("implementation %s, spec %s, corpus v%d, postgres %s\n", rep.Implementation, rep.Spec, rep.Corpus, rep.Postgres)
+	fmt.Fprintf(summary, "implementation %s, spec %s, corpus v%d, postgres %s\n", rep.Implementation, rep.Spec, rep.Corpus, rep.Postgres)
 	for _, lvl := range sortedKeys(rep.Results) {
 		r := rep.Results[lvl]
-		fmt.Printf("  level %s: %d passed, %d failed, %d skipped, %d not applicable\n", lvl, r.Passed, r.Failed, r.Skipped, r.NotApplicable)
+		fmt.Fprintf(summary, "  level %s: %d passed, %d failed, %d skipped, %d not applicable\n", lvl, r.Passed, r.Failed, r.Skipped, r.NotApplicable)
 	}
-	fmt.Printf("claimed levels: %v\n", rep.ClaimedLevels)
+	fmt.Fprintf(summary, "claimed levels: %v\n", rep.ClaimedLevels)
 	for _, f := range rep.Failures {
-		fmt.Printf("  FAIL %-46s (spec %s) %s\n", f.ID, f.Spec, f.Reason)
+		fmt.Fprintf(summary, "  FAIL %-46s (spec %s) %s\n", f.ID, f.Spec, f.Reason)
 	}
 	for _, s := range rep.Skips {
-		fmt.Printf("  SKIP %-46s %s\n", s.ID, s.Reason)
+		fmt.Fprintf(summary, "  SKIP %-46s %s\n", s.ID, s.Reason)
 	}
 	for _, s := range rep.NotApplicable {
-		fmt.Printf("  N/A  %-46s %s\n", s.ID, s.Reason)
+		fmt.Fprintf(summary, "  N/A  %-46s %s\n", s.ID, s.Reason)
 	}
 	return nil
 }
