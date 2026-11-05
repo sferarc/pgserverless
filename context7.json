@@ -1,0 +1,24 @@
+{
+	"$schema": "https://context7.com/schema/context7.json",
+	"projectTitle": "pgserverless",
+	"description": "Go library and server that put PostgreSQL behind POST /sql and a WebSocket tunnel, the request and response shapes the @neondatabase/serverless driver sends, plus a written protocol spec and a conformance corpus that checks any server over the network.",
+	"excludeFolders": [
+		"pgfake",
+		"spec/cases",
+		"cmd/pgserverless/example",
+		"driver-conformance/tests",
+		"driver-conformance/helpers",
+		"driver-conformance/scripts"
+	],
+	"rules": [
+		"Point neon() at the server with neonConfig.fetchEndpoint = \"http://localhost:4000/sql\", and Pool or Client at the tunnel with neonConfig.wsProxy = \"localhost:4000/v2\".",
+		"Set neonConfig.pipelineConnect = false when the database uses SCRAM. The driver's default connect pipelining assumes a cleartext password request and hangs otherwise.",
+		"Expect int8 and numeric values as JSON strings, not numbers: a JSON number is a double and loses precision beyond 2^53.",
+		"One admission function decides which database a request reaches: HTTPAdmission for NewHTTPHandler, Admission for the Echo NewHandler. Return an *AdmissionError to choose a refusal's HTTP status.",
+		"Give the WebSocket tunnel its own admission with WithHTTPWebSocketAdmission or WithWebSocketAdmission. StaticHTTPUpstream reads credentials from a request header the tunnel does not carry.",
+		"Upstream TLS is on by default. For a database that does not serve TLS, return an Upstream with TLSMode: pgserverless.TLSDisable from your own admission.",
+		"There is no connection pooling: each POST /sql request opens and closes its own database connection. Put a pooler in front of a database that cannot take that.",
+		"For a ready server in front of one database, run go install github.com/sferarc/pgserverless/cmd/pgserverless@latest and start it with DATABASE_URL set. It listens on 127.0.0.1:4000.",
+		"spec/SPEC.md is the only normative text and wins where openapi.yaml differs. Check any server against spec/cases/v1.json with go run ./cmd/pgsconform."
+	]
+}

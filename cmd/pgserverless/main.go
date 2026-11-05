@@ -118,7 +118,7 @@ func run() error {
 // a cross-site form post to a loopback listener cannot run SQL.
 func httpAdmission(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.HTTPAdmission {
 	return func(r *http.Request) (pgserverless.Upstream, error) {
-		ci, err := pgserverless.ParseConnectionString(r.Header.Get("Connection-String"))
+		ci, err := pgserverless.ParseRequestConnectionString(r.Header.Get("Connection-String"))
 		if err != nil {
 			return pgserverless.Upstream{}, err
 		}

@@ -70,3 +70,32 @@ func TestConformance_PasswordWithBarePercentConnects(t *testing.T) {
 	assert.Equal(t, "ops^team", pg.StartupParam("user"))
 	assert.Equal(t, "app", pg.StartupParam("database"))
 }
+
+func TestParseRequestConnectionStringRequiresAPassword(t *testing.T) {
+	for _, s := range []string{"postgres://u@h/db", "postgres://u:@h/db"} {
+		_, err := ParseRequestConnectionString(s)
+		assert.ErrorIs(t, err, ErrMissingPassword, s)
+	}
+	ci, err := ParseRequestConnectionString("postgres://u:pw@h/db")
+	require.NoError(t, err)
+	assert.Equal(t, "pw", ci.Password)
+}
+
+// Neon's proxy refuses this before connecting; dialed, a trust authenticated upstream ran the request as the role it named.
+func TestConformance_ConnectionStringWithoutPasswordIsRefused(t *testing.T) {
+	for _, conn := range []string{"postgresql://postgres@" + conformanceHost + "/db", "postgresql://postgres:@" + conformanceHost + "/db"} {
+		t.Run(conn, func(t *testing.T) {
+			pg := pgfake.New(t)
+			pg.SetResult("SELECT 1", oneInt(1))
+			e := newConformanceServer(t, pg)
+
+			rec := doSQL(e, `{"query":"SELECT 1"}`, map[string]string{"Neon-Connection-String": conn})
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			var res ErrorResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+			assert.Equal(t, ErrMissingPassword.Error(), res.Message)
+			assert.Empty(t, pg.StartupParam("user"), "the upstream was dialed")
+		})
+	}
+}

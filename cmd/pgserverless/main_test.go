@@ -226,6 +226,16 @@ func TestHTTPAdmission(t *testing.T) {
 		}
 	})
 
+	t.Run("header without a password is refused like Neon", func(t *testing.T) {
+		for _, conn := range []string{"postgres://postgres@elsewhere.example.test/app", "postgres://postgres:@elsewhere.example.test/app"} {
+			req := httptest.NewRequest(http.MethodPost, "/sql", nil)
+			req.Header.Set("Connection-String", conn)
+			if _, err := admit(req); !errors.Is(err, pgserverless.ErrMissingPassword) {
+				t.Errorf("%s: got %v, want ErrMissingPassword", conn, err)
+			}
+		}
+	})
+
 	t.Run("malformed header is refused", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sql", nil)
 		req.Header.Set("Connection-String", "not a url")

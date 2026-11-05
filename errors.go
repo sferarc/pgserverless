@@ -24,6 +24,8 @@ var (
 	ErrRequestTooLarge         = errors.New("request is too large")
 	// ErrQueryCancelled marks a statement stopped because its request ended, by the query timeout or the client going away.
 	ErrQueryCancelled = errors.New("query was cancelled")
+	// ErrMissingPassword is Neon's answer to a request connection string with no password, or an empty one.
+	ErrMissingPassword = errors.New("missing authentication credentials: required password")
 )
 
 // queryCancelledMessage is what Neon's proxy answers for a cancelled statement, with code 08P01 and status 400.
@@ -271,6 +273,21 @@ func ParseConnectionString(s string) (*ConnInfo, error) {
 		Password: password,
 		Database: database,
 	}, nil
+}
+
+// ParseRequestConnectionString is ParseConnectionString for a request's
+// Connection-String header, which must also carry a password: Neon's proxy
+// refuses one without it before connecting, so a trust or peer authenticated
+// upstream never runs a request as whatever role it names.
+func ParseRequestConnectionString(s string) (*ConnInfo, error) {
+	ci, err := ParseConnectionString(s)
+	if err != nil {
+		return nil, err
+	}
+	if ci.Password == "" {
+		return nil, ErrMissingPassword
+	}
+	return ci, nil
 }
 
 // unescapeLenient decodes every %XX escape and keeps any other character as written, as Neon's proxy does.

@@ -134,7 +134,7 @@ func StaticUpstream(addr string) Admission {
 }
 
 func staticUpstream(addr string, r *http.Request) (Upstream, error) {
-	ci, err := ParseConnectionString(r.Header.Get("Connection-String"))
+	ci, err := ParseRequestConnectionString(r.Header.Get("Connection-String"))
 	if err != nil {
 		return Upstream{}, err
 	}
