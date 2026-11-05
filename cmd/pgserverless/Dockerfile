@@ -1,6 +1,10 @@
 # Build from the root of a github.com/sferarc/pgserverless checkout:
 #   docker build -f cmd/pgserverless/Dockerfile -t pgserverless .
-FROM golang:1.27-alpine AS build
+# The build stage runs on the builder's own platform and cross-compiles, so a multi-arch build compiles no Go under QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+
+ARG TARGETOS
+ARG TARGETARCH
 
 # A static binary lets the final stage carry no libc.
 ENV CGO_ENABLED=0
@@ -13,7 +17,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -trimpath -ldflags="-s -w" -o /out/pgserverless ./cmd/pgserverless
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/pgserverless ./cmd/pgserverless
 
 FROM alpine:3.24
 
