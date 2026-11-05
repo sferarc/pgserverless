@@ -87,6 +87,8 @@ A self-signed database certificate on a trusted network is `sslmode=require`; to
 
 `GET /health` answers `{"status":"ok"}` without touching the database.
 
+It closes a keep-alive connection idle for 2 minutes, longer than the 60 second idle timeout of common load balancers. A WebSocket tunnel stays open however long it is quiet.
+
 On SIGTERM or SIGINT it stops accepting requests and gives running ones, and statements running in WebSocket tunnels, 7 seconds to finish. It then cancels the rest on the database and exits within 3 more seconds, inside Docker's default 10 second stop timeout.
 
 ## Exposure

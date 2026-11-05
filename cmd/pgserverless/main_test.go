@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/x509"
@@ -756,4 +757,87 @@ func TestShutdownCancelsATunnelStatementStillRunningAfterTheDrain(t *testing.T) 
 	if got := pg.CancelRequests(); got != 1 {
 		t.Errorf("database received %d CancelRequests, want 1: the tunnel's statement was left running", got)
 	}
+}
+
+// serveWithIdleTimeout serves h through newServer on a loopback port and returns its address.
+func serveWithIdleTimeout(t *testing.T, h http.Handler, idle time.Duration) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := newServer(context.Background(), "", h, idle)
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().String()
+}
+
+func TestServerClosesAnIdleKeepAliveConnection(t *testing.T) {
+	addr := serveWithIdleTimeout(t, newMux(nil, nil, nil, nil), 100*time.Millisecond)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n"); err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.Close {
+		t.Fatal("the server closed the connection after the response, want it kept alive")
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Errorf("idle connection read %v, want io.EOF once the idle timeout passed", err)
+	}
+}
+
+func TestIdleTimeoutLeavesAQuietTunnelOpen(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT 1", pgfake.Result{Cols: []pgfake.Col{{Name: "n", TypeOID: 23}}, Rows: [][]any{{int32(1)}}, Tag: "SELECT 1"})
+	admit := func(*http.Request) (pgserverless.Upstream, error) {
+		return pgserverless.Upstream{Addr: pg.Addr(), InsecureSkipVerify: true}, nil
+	}
+	addr := serveWithIdleTimeout(t, newMux(admit, admit, nil, nil), 100*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws://"+addr+"/v2", &websocket.DialOptions{Subprotocols: []string{"pg"}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer ws.CloseNow()
+	conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	startup, _ := (&pgproto3.StartupMessage{ProtocolVersion: pgproto3.ProtocolVersionNumber, Parameters: map[string]string{"user": "u"}}).Encode(nil)
+	if _, err := conn.Write(startup); err != nil {
+		t.Fatalf("startup: %v", err)
+	}
+	fe := pgproto3.NewFrontend(conn, conn)
+	readyForQuery := func(step string) {
+		t.Helper()
+		for {
+			msg, err := fe.Receive()
+			if err != nil {
+				t.Fatalf("%s: %v", step, err)
+			}
+			if _, ok := msg.(*pgproto3.ReadyForQuery); ok {
+				return
+			}
+		}
+	}
+	readyForQuery("startup")
+
+	time.Sleep(500 * time.Millisecond)
+	fe.Send(&pgproto3.Query{String: "SELECT 1"})
+	if err := fe.Flush(); err != nil {
+		t.Fatalf("query after idling: %v", err)
+	}
+	readyForQuery("query after idling past the idle timeout")
 }

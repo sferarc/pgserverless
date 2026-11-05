@@ -90,12 +90,7 @@ func run() error {
 	mux := newMux(admitHTTP, admitWS, origins, tunnels)
 	requestCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		BaseContext:       func(net.Listener) context.Context { return requestCtx },
-	}
+	srv := newServer(requestCtx, addr, mux, idleTimeout)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -116,6 +111,20 @@ func run() error {
 	}
 
 	return shutdown(srv, cancelRequests, tunnels, drainTimeout, cancelTimeout)
+}
+
+// idleTimeout is above the 60 s idle timeout common load balancers use, so they do not reuse a connection just closed here.
+const idleTimeout = 2 * time.Minute
+
+// newServer closes a keep-alive connection idle for idle; IdleTimeout does not reach a hijacked WebSocket.
+func newServer(base context.Context, addr string, h http.Handler, idle time.Duration) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       idle,
+		BaseContext:       func(net.Listener) context.Context { return base },
+	}
 }
 
 // Docker sends SIGKILL 10 s after SIGTERM, so the drain and the cancel together end before it.
