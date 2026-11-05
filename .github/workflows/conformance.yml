@@ -59,7 +59,7 @@ jobs:
             kill -0 "$server_pid" 2>/dev/null || exit 1
             sleep 0.2
           done
-          "$RUNNER_TEMP/pgsconform" -cases spec/cases/v1.json -server http://127.0.0.1:4000 -dsn "$UPSTREAM_URL" -report "$RUNNER_TEMP/pgsconform-report.json"
+          "$RUNNER_TEMP/pgsconform" -cases spec/cases/v1.json -server http://127.0.0.1:4000 -single-database -dsn "$UPSTREAM_URL" -report "$RUNNER_TEMP/pgsconform-report.json"
 
       # The suite has no lockfile of its own; package.json pins exact versions.
       - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
