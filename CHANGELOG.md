@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.2
+
+### Patch Changes
+
+- da28cb7: The repository root has a `context7.json`, so a Context7 listing of the repository indexes the README, `cmd/pgserverless/README.md` and the spec but not the corpus, the test backend or the driver suite's tests, and hands coding agents rules taken from the README: the `neonConfig` settings, int8 and numeric as strings, admission and TLS, no pooling.
+- 18c5605: `StaticUpstream`, `StaticHTTPUpstream` and `cmd/pgserverless` refuse a `POST /sql` whose connection string has no password, or an empty one, with 400 `missing authentication credentials: required password` before dialing, as Neon's proxy does. Against a trust or peer authenticated upstream such a request used to run as whatever role it named. `ParseRequestConnectionString` is the check for a host's own admission; `ParseConnectionString` still accepts a URL without a password, so a `DATABASE_URL` for peer or trust authentication keeps working.
+
 ## 0.9.1
 
 ### Patch Changes
