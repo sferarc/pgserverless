@@ -1,0 +1,137 @@
+# Installed by hand as .github/workflows/publish.yml in sferarc/pgserverless; the forward sync never writes .github.
+# A tag pushed as the sferarc-hq App starts it (a GITHUB_TOKEN push would not); a dispatch publishes a tag that already exists.
+name: Publish
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z tag to publish"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: release, binaries and image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - name: Check the tag
+        run: |
+          set -euo pipefail
+          if ! printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error title=Not a release tag::\"${TAG}\" is not a vX.Y.Z tag."
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # On a dispatch github.sha is the dispatched branch's head, not the tagged commit.
+      - name: Work out the tagged commit and whether this is the latest release
+        run: |
+          set -euo pipefail
+          echo "REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          latest=$(git tag -l 'v*' --sort=-v:refname | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+          if [ "$latest" = "$TAG" ]; then
+            echo "LATEST=true" >> "$GITHUB_ENV"
+          else
+            echo "LATEST=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Write the release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          awk -v heading="## ${VERSION}" '/^## /{ if (found) exit; if ($0 == heading) { found = 1; next } } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error title=No changelog section::CHANGELOG.md has no \"## ${VERSION}\" section to use as the release notes."
+            exit 1
+          fi
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build the binaries
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          build="$RUNNER_TEMP/build"
+          mkdir -p "$dist" "$build"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="pgserverless_${VERSION}_${os}_${arch}"
+            mkdir -p "$build/$name"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$build/$name/pgserverless" ./cmd/pgserverless
+            cp LICENSE "$build/$name/"
+            cp cmd/pgserverless/README.md "$build/$name/README.md"
+            tar -C "$build" -czf "$dist/$name.tar.gz" "$name"
+          done
+          (cd "$dist" && sha256sum -- *.tar.gz > checksums.txt)
+          cat "$dist/checksums.txt"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # The Dockerfile cross-compiles Go, but the arm64 runtime stage's apk add and adduser still run emulated.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: cmd/pgserverless/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.LATEST == 'true' && format('{0}:latest', env.IMAGE) || '' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ env.REVISION }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      # Last, so a release on the page means its image was pushed; a rerun replaces the assets and notes.
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP"/dist/* --clobber
+            gh release edit "$TAG" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --latest="$LATEST"
+          else
+            gh release create "$TAG" "$RUNNER_TEMP"/dist/* --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --latest="$LATEST"
+          fi
+          {
+            echo "Published ${TAG}: release assets and \`${IMAGE}:${VERSION}\`."
+            if [ "$LATEST" = "true" ]; then echo "Also tagged \`${IMAGE}:latest\`."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
