@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.3
+
+### Patch Changes
+
+- 563b939: `POST /sql` closes the upstream PostgreSQL connection before it sends the response. The connection used to stay open until the client had read the whole body, so a client that read a large result slowly, or stopped reading, held a database backend for as long as it liked, and a failed batch held its transaction and locks until the error went out. The response is now held in memory until the connection is closed, as Neon's proxy returns its connection before sending the body.
+- 561760b: A request's connection string is read as Neon's proxy reads it: the scheme matches in any case, so `POSTGRES://` no longer answers 400, and the database is the first path segment, so `postgres://u:p@host/db/extra` runs against `db` instead of a database named `db/extra`. `ParseConnectionString`, used for `DATABASE_URL`, still takes the whole path as libpq does.
+- 702fdb2: SPEC.md 0.8.0 requires an empty `queries` array to be answered 200 with `results` as `[]`, as Neon's proxy does; client 1.1.0 sends that body for `sql.transaction([])`. It used to require a non-empty array, and `openapi.yaml` gave `queries` `minItems: 1`, so a server built from them could refuse that call with 400. The corpus gains `batch/empty-batch-is-200-with-no-results`. The reference implementation already behaved this way.
+- 2add81d: `ParseConnectionString` refuses a port above 65535 as an invalid connection string, as Neon's proxy and libpq do, so such a `Connection-String` header answers 400 and `cmd/pgserverless` will not start on such a `DATABASE_URL`. `POST /sql` used to cast the port to 16 bits and dial another one (543200 dialed 18912); an `Upstream.Addr` whose port is not a valid TCP port now fails the dial instead, as the WebSocket path already did.
+- d6e03dc: `POST /sql` now gives a client two minutes to read its response. A client that stopped reading used to keep the handler goroutine and the buffered response, up to the response cap, alive for as long as it liked on `NewHTTPHandler`, the echo `Handler` and `cmd/pgserverless`. The deadline is set per request and net/http clears it once the response is sent, so the next request on a keep-alive connection and WebSocket tunnels are not affected.
+- 8766745: `cmd/pgserverless` now cancels the statements still running when it is stopped. On SIGTERM or SIGINT it gave running requests 10 seconds, then exited 1 with `context deadline exceeded` while a statement of up to the 30 second query timeout kept running on the database. It now waits 7 seconds, cancels what remains so PostgreSQL receives a CancelRequest for each statement and the client its error response, and exits 0 within 3 more seconds.
+- 158d4e9: `cmd/pgserverless` now cancels a statement running in a WebSocket tunnel when it is stopped. `http.Server.Shutdown` does not track hijacked connections, so the process exited with the tunnel open and PostgreSQL kept running the statement until it next wrote to the closed socket. The new `Tunnels` type, registered with `WithHTTPTunnels`, records each tunnel's cancel key and whether a statement is in flight; on stop the server gives those statements the same 7 second drain as `POST /sql`, then sends PostgreSQL a CancelRequest for each one still running.
+
 ## 0.9.2
 
 ### Patch Changes
