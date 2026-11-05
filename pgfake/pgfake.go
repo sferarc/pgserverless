@@ -64,6 +64,8 @@ type PG struct {
 	cancels        map[uint32]chan struct{}
 	nextPID        uint32
 	cancelRequests int
+	// sessions counts the sessions whose connection is still open.
+	sessions int
 
 	// dbEncoding is the database's encoding and so a session's client_encoding when its startup names none; empty is UTF8.
 	dbEncoding string
@@ -194,9 +196,17 @@ func (f *PG) CancelRequests() int {
 	return f.cancelRequests
 }
 
+// Sessions returns how many sessions still have their connection open.
+func (f *PG) Sessions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessions
+}
+
 func (f *PG) register() (uint32, chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sessions++
 	f.nextPID++
 	ch := make(chan struct{})
 	f.cancels[f.nextPID] = ch
@@ -206,6 +216,7 @@ func (f *PG) register() (uint32, chan struct{}) {
 func (f *PG) unregister(pid uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sessions--
 	delete(f.cancels, pid)
 }
 

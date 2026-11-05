@@ -385,7 +385,11 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 		writeDialError(w, err)
 		return
 	}
+	// Deferred in this order, the connection closes before the held response is sent.
+	held := newHeldResponse()
+	defer held.sendTo(w)
 	defer conn.Close(context.Background())
+	w = held
 
 	if up.MaxResponseBytes != 0 {
 		maxResponse = up.MaxResponseBytes
