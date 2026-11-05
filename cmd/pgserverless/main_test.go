@@ -270,6 +270,15 @@ func TestRunRedactsDatabaseURL(t *testing.T) {
 	}
 }
 
+// A typo for 5432 used to start and dial port 18912 on POST /sql.
+func TestRunRefusesADatabaseURLPortPastSixteenBits(t *testing.T) {
+	t.Setenv("PGSERVERLESS_ADDR", "127.0.0.1:0")
+	t.Setenv("DATABASE_URL", "postgres://u:p@db:543200/app")
+	if err := run(); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("run() = %v, want the DATABASE_URL error", err)
+	}
+}
+
 func TestRunRefusesRemoteListener(t *testing.T) {
 	t.Setenv("PGSERVERLESS_ADDR", "0.0.0.0:0")
 	t.Setenv("PGSERVERLESS_ALLOW_REMOTE", "")

@@ -250,6 +250,9 @@ func ParseConnectionString(s string) (*ConnInfo, error) {
 	port := u.Port()
 	if port == "" {
 		port = "5432"
+	} else if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		// Neon's proxy and libpq refuse it too; read as a uint16, 543200 dialed port 18912.
+		return nil, fmt.Errorf("%w: invalid port %q", ErrInvalidConnectionString, port)
 	}
 	if database == "" {
 		database = username

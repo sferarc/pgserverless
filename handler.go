@@ -232,7 +232,11 @@ func upstreamConfig(up Upstream, mode pgx.QueryExecMode) (*pgx.ConnConfig, error
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	port, _ := strconv.Atoi(portStr)
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		// The WebSocket path's net.Dial refuses such an Addr; a uint16 cast dialed another port.
+		return nil, fmt.Errorf("upstream address %q: invalid port", up.Addr)
+	}
 
 	cfg, err := pgx.ParseConfig("")
 	if err != nil {

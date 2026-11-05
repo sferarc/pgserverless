@@ -99,3 +99,47 @@ func TestConformance_ConnectionStringWithoutPasswordIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// Neon's proxy and libpq refuse a port past 65535; read as a uint16, a typo for 5432 dialed another port.
+func TestParseConnectionStringRefusesAPortPastSixteenBits(t *testing.T) {
+	for _, s := range []string{
+		"postgres://u:pw@h:65536/db",
+		"postgres://u:pw@h:543200/db",
+		"postgres://u:pw@h:99999999999999999999/db",
+	} {
+		_, err := ParseConnectionString(s)
+		assert.ErrorIs(t, err, ErrInvalidConnectionString, s)
+	}
+	for _, port := range []string{"1", "5432", "65535"} {
+		ci, err := ParseConnectionString("postgres://u:pw@h:" + port + "/db")
+		require.NoError(t, err, port)
+		assert.Equal(t, port, ci.Port)
+	}
+}
+
+func TestConformance_ConnectionStringWithAPortPastSixteenBitsIsRefused(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT 1", oneInt(1))
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, `{"query":"SELECT 1"}`, map[string]string{
+		"Neon-Connection-String": "postgresql://u:p@" + conformanceHost + ":543200/db",
+	})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	var res ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+	assert.Contains(t, res.Message, ErrInvalidConnectionString.Error())
+	assert.Empty(t, pg.StartupParam("user"), "the upstream was dialed")
+}
+
+// The WebSocket path's net.Dial refuses these, and a uint16 cast on POST /sql dialed port 18912 for 543200.
+func TestUpstreamConfigRefusesAnAddrWithAnInvalidPort(t *testing.T) {
+	for _, addr := range []string{"db.example.test:65536", "db.example.test:543200", "db.example.test:"} {
+		_, err := upstreamConfig(Upstream{Addr: addr, User: "u", Database: "db"}, 0)
+		assert.Error(t, err, addr)
+	}
+	cfg, err := upstreamConfig(Upstream{Addr: "db.example.test:65535", User: "u", Database: "db"}, 0)
+	require.NoError(t, err)
+	assert.Equal(t, uint16(65535), cfg.Port)
+}
