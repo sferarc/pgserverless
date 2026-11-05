@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+### Minor Changes
+
+- 7a103ea: `pgsconform` exits 1 only when cases failed and 2 on a usage or setup error (flags, corpus, fixtures, a server under test that does not answer), so CI can tell a failing server from a broken run. `-report -` writes the JSON report to stdout and moves the summary to stderr.
+- 69ac0e2: The reference server (`cmd/pgserverless`) reads `PGSERVERLESS_LOG_FORMAT`: `text` (the default) keeps the `slog` text lines, and `json` writes one JSON object per line for log pipelines and container platforms. Any other value stops the server at start with a message naming the accepted values.
+
 ## 0.8.3
 
 ### Patch Changes
