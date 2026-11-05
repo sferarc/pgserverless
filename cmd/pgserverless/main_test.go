@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/jackc/pgx/v5/pgproto3"
+
 	"github.com/sferarc/pgserverless"
 	"github.com/sferarc/pgserverless/pgfake"
 )
@@ -331,7 +334,7 @@ func TestAuthTokenGuardsBothTransports(t *testing.T) {
 		// A status no other path answers, so the test sees the token check passed without dialing a database.
 		return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusTeapot, Message: "admitted"}
 	}
-	srv := httptest.NewServer(newMux(requireToken("s3cret", inner), requireToken("s3cret", inner), []string{"*"}))
+	srv := httptest.NewServer(newMux(requireToken("s3cret", inner), requireToken("s3cret", inner), []string{"*"}, nil))
 	defer srv.Close()
 
 	do := func(method, path, auth string) int {
@@ -577,7 +580,7 @@ func TestTokenlessGuardRefusesBeforeTheUpgrade(t *testing.T) {
 		return pgserverless.Upstream{}, &pgserverless.AdmissionError{Status: http.StatusTeapot, Message: "admitted"}
 	}
 	admitHTTP, admitWS := guardBrowsers(true, nil, inner, inner)
-	srv := httptest.NewServer(newMux(admitHTTP, admitWS, nil))
+	srv := httptest.NewServer(newMux(admitHTTP, admitWS, nil, nil))
 	defer srv.Close()
 
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v2", nil)
@@ -626,7 +629,7 @@ func TestShutdownCancelsAStatementStillRunningAfterTheDrain(t *testing.T) {
 
 	requestCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
-	ts := httptest.NewUnstartedServer(newMux(admit, admit, nil))
+	ts := httptest.NewUnstartedServer(newMux(admit, admit, nil, nil))
 	ts.Config.BaseContext = func(net.Listener) context.Context { return requestCtx }
 	ts.Start()
 	defer ts.Close()
@@ -663,7 +666,7 @@ func TestShutdownCancelsAStatementStillRunningAfterTheDrain(t *testing.T) {
 	}
 
 	start := time.Now()
-	if err := shutdown(ts.Config, cancelRequests, 200*time.Millisecond, 5*time.Second); err != nil {
+	if err := shutdown(ts.Config, cancelRequests, nil, 200*time.Millisecond, 5*time.Second); err != nil {
 		t.Fatalf("shutdown: %v, want nil once the cancelled request answered", err)
 	}
 	if elapsed := time.Since(start); elapsed > 4*time.Second {
@@ -685,10 +688,72 @@ func TestShutdownReturnsAtOnceWithNothingRunning(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
 	cancelled := false
-	if err := shutdown(ts.Config, func() { cancelled = true }, time.Second, time.Second); err != nil {
+	if err := shutdown(ts.Config, func() { cancelled = true }, nil, time.Second, time.Second); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 	if cancelled {
 		t.Error("shutdown cancelled request contexts with no request running")
+	}
+}
+
+func TestShutdownCancelsATunnelStatementStillRunningAfterTheDrain(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT pg_sleep(60)", pgfake.Result{WaitForCancel: true})
+	admit := func(*http.Request) (pgserverless.Upstream, error) {
+		return pgserverless.Upstream{Addr: pg.Addr(), InsecureSkipVerify: true}, nil
+	}
+
+	tunnels := &pgserverless.Tunnels{}
+	requestCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	ts := httptest.NewUnstartedServer(newMux(admit, admit, nil, tunnels))
+	ts.Config.BaseContext = func(net.Listener) context.Context { return requestCtx }
+	ts.Start()
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/v2", &websocket.DialOptions{Subprotocols: []string{"pg"}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer ws.CloseNow()
+	conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	startup, _ := (&pgproto3.StartupMessage{ProtocolVersion: pgproto3.ProtocolVersionNumber, Parameters: map[string]string{"user": "u"}}).Encode(nil)
+	if _, err := conn.Write(startup); err != nil {
+		t.Fatalf("startup: %v", err)
+	}
+	fe := pgproto3.NewFrontend(conn, conn)
+	for {
+		msg, err := fe.Receive()
+		if err != nil {
+			t.Fatalf("startup: %v", err)
+		}
+		if _, ok := msg.(*pgproto3.ReadyForQuery); ok {
+			break
+		}
+	}
+	fe.Send(&pgproto3.Query{String: "SELECT pg_sleep(60)"})
+	if err := fe.Flush(); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for tunnels.Running() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the statement never started in the tunnel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// http.Server.Shutdown alone returns at once here, since it does not track the hijacked tunnel.
+	start := time.Now()
+	if err := shutdown(ts.Config, cancelRequests, tunnels, 200*time.Millisecond, 5*time.Second); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Errorf("shutdown took %v, want the tunnel's statement given the drain first", elapsed)
+	}
+	if got := pg.CancelRequests(); got != 1 {
+		t.Errorf("database received %d CancelRequests, want 1: the tunnel's statement was left running", got)
 	}
 }

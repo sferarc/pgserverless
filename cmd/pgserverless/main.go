@@ -86,7 +86,8 @@ func run() error {
 	if token == "" {
 		admitHTTP, admitWS = guardBrowsers(isLoopback(addr), origins, admitHTTP, admitWS)
 	}
-	mux := newMux(admitHTTP, admitWS, origins)
+	tunnels := &pgserverless.Tunnels{}
+	mux := newMux(admitHTTP, admitWS, origins, tunnels)
 	requestCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
 	srv := &http.Server{
@@ -114,7 +115,7 @@ func run() error {
 	case <-ctx.Done():
 	}
 
-	return shutdown(srv, cancelRequests, drainTimeout, cancelTimeout)
+	return shutdown(srv, cancelRequests, tunnels, drainTimeout, cancelTimeout)
 }
 
 // Docker sends SIGKILL 10 s after SIGTERM, so the drain and the cancel together end before it.
@@ -123,20 +124,39 @@ const (
 	cancelTimeout = 3 * time.Second
 )
 
-// shutdown lets running requests finish for drain, then cancels the rest so pgx sends PostgreSQL a CancelRequest
-// for each statement rather than leaving it running there, and waits cancelWait for their handlers to answer.
-func shutdown(srv *http.Server, cancelRequests context.CancelFunc, drain, cancelWait time.Duration) error {
+// shutdown lets running requests and tunnel statements finish for drain, then cancels the rest so PostgreSQL gets a
+// CancelRequest for each statement rather than leaving it running there, and waits cancelWait for their handlers to answer.
+func shutdown(srv *http.Server, cancelRequests context.CancelFunc, tunnels *pgserverless.Tunnels, drain, cancelWait time.Duration) error {
 	drainCtx, cancelDrain := context.WithTimeout(context.Background(), drain)
 	defer cancelDrain()
 	err := srv.Shutdown(drainCtx)
+	if err == nil {
+		err = waitForTunnelStatements(drainCtx, tunnels)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	slog.Warn("pgserverless: cancelling requests still running at shutdown", "drain", drain)
-	cancelRequests()
 	waitCtx, cancelWaitCtx := context.WithTimeout(context.Background(), cancelWait)
 	defer cancelWaitCtx()
+	// Before cancelRequests, which ends the tunnels and with them the record of what each was running.
+	tunnels.CancelRunning(waitCtx)
+	cancelRequests()
 	return srv.Shutdown(waitCtx)
+}
+
+// waitForTunnelStatements returns once no tunnel has a statement in flight, polling as http.Server.Shutdown does.
+func waitForTunnelStatements(ctx context.Context, tunnels *pgserverless.Tunnels) error {
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for tunnels.Running() > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
+	return nil
 }
 
 // httpAdmission sends every POST /sql to the database in DATABASE_URL as the
@@ -155,13 +175,14 @@ func httpAdmission(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.HTTP
 	}
 }
 
-func newMux(admitHTTP, admitWS pgserverless.HTTPAdmission, origins []string) *http.ServeMux {
+func newMux(admitHTTP, admitWS pgserverless.HTTPAdmission, origins []string, tunnels *pgserverless.Tunnels) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/", pgserverless.NewHTTPHandler(
 		admitHTTP,
 		pgserverless.WithHTTPWebSocketAdmission(admitWS),
 		pgserverless.WithHTTPMaxResponseBytes(pgserverless.MaxResponseBytes),
 		pgserverless.WithHTTPCORSOrigins(origins...),
+		pgserverless.WithHTTPTunnels(tunnels),
 	))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

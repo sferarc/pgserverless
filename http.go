@@ -54,6 +54,7 @@ type httpHandler struct {
 	startupTimeout   time.Duration
 	bodyTimeout      time.Duration
 	writeTimeout     time.Duration
+	tunnels          *Tunnels
 }
 
 // NewHTTPHandler returns an http.Handler serving POST /sql and GET /v2, with
@@ -89,7 +90,7 @@ func (h *httpHandler) upgrade(w http.ResponseWriter, r *http.Request) {
 	if admit == nil {
 		admit = h.admit
 	}
-	serveWebSocket(w, r, func() (Upstream, error) { return admit(r) }, h.dialErrorFor(r), h.startupTimeout)
+	serveWebSocket(w, r, func() (Upstream, error) { return admit(r) }, h.dialErrorFor(r), h.startupTimeout, h.tunnels)
 }
 
 func (h *httpHandler) dialErrorFor(r *http.Request) func(error) {

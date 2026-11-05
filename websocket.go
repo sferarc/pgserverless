@@ -129,13 +129,13 @@ func (h *Handler) Upgrade(c echo.Context) error {
 	if admit == nil {
 		admit = h.admit
 	}
-	serveWebSocket(c.Response(), c.Request(), func() (Upstream, error) { return admit(c) }, h.dialErrorFor(c), h.startupTimeout)
+	serveWebSocket(c.Response(), c.Request(), func() (Upstream, error) { return admit(c) }, h.dialErrorFor(c), h.startupTimeout, nil)
 	return nil
 }
 
 // serveWebSocket is the transport-independent core of GET /v2.
-// A zero startupWait allows startupTimeout.
-func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), startupWait time.Duration) {
+// A zero startupWait allows startupTimeout, and a nil tunnels tracks nothing.
+func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), startupWait time.Duration, tunnels *Tunnels) {
 	ctx := r.Context()
 
 	// Admission runs BEFORE the upgrade, so a refusal is an ordinary HTTP
@@ -210,7 +210,9 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 		return
 	}
 
-	relay(client, server)
+	tun := tunnels.add(up)
+	defer tunnels.remove(tun)
+	relay(client, server, tun)
 }
 
 // declineEncryptionAndReadStartup runs the startup phase on the client side.
@@ -370,13 +372,21 @@ func negotiateUpstreamTLS(ctx context.Context, conn net.Conn, up Upstream, host 
 // other is closed too, so a half-open connection cannot leave a goroutine
 // parked on a read that will never return. Both copies are waited for, so the
 // caller's deferred Close does not race a copy still in flight.
-func relay(client, server net.Conn) {
+//
+// A non-nil tun sees each direction's bytes before they are forwarded, so it
+// knows the session's cancel key and whether a statement is in flight.
+func relay(client, server net.Conn, tun *tunnel) {
+	var fromClient, fromServer io.Reader = client, server
+	if tun != nil {
+		fromClient = io.TeeReader(client, &tun.fromClient)
+		fromServer = io.TeeReader(server, &tun.fromServer)
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(server, client)
+		_, _ = io.Copy(server, fromClient)
 		// Unblock the other direction.
 		_ = server.Close()
 		_ = client.Close()
@@ -384,7 +394,7 @@ func relay(client, server net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(client, server)
+		_, _ = io.Copy(client, fromServer)
 		_ = client.Close()
 		_ = server.Close()
 	}()
