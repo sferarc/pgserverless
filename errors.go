@@ -213,18 +213,23 @@ func SanitizeError(msg string) string {
 
 // ParseConnectionString extracts host, user, password, database from a postgres:// URL.
 // Unlike net/url it accepts a password holding a bare '%' (50%off) or an unencoded ^, as Neon's proxy and libpq do.
+// The database is the whole path, as libpq reads it.
 func ParseConnectionString(s string) (*ConnInfo, error) {
+	return parseConnectionString(s, false)
+}
+
+func parseConnectionString(s string, firstSegmentOnly bool) (*ConnInfo, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, ErrMissingConnectionString
 	}
 
-	// Normalize scheme
-	if !strings.HasPrefix(s, "postgres://") && !strings.HasPrefix(s, "postgresql://") {
+	// Any case, as URL parsers lowercase the scheme (Neon's proxy reads POSTGRES:// too).
+	scheme, authority, ok := strings.Cut(s, "://")
+	if !ok || (!strings.EqualFold(scheme, "postgres") && !strings.EqualFold(scheme, "postgresql")) {
 		return nil, fmt.Errorf("%w: must start with postgres:// or postgresql://", ErrInvalidConnectionString)
 	}
 
-	_, authority, _ := strings.Cut(s, "://")
 	var path string
 	if i := strings.IndexAny(authority, "/?#"); i >= 0 {
 		authority, path = authority[:i], authority[i:]
@@ -245,7 +250,11 @@ func ParseConnectionString(s string) (*ConnInfo, error) {
 
 	username, password, _ := strings.Cut(userinfo, ":")
 	username, password = unescapeLenient(username), unescapeLenient(password)
-	database := unescapeLenient(strings.TrimPrefix(path, "/"))
+	path = strings.TrimPrefix(path, "/")
+	if firstSegmentOnly {
+		path, _, _ = strings.Cut(path, "/")
+	}
+	database := unescapeLenient(path)
 	host := u.Hostname()
 	port := u.Port()
 	if port == "" {
@@ -281,9 +290,10 @@ func ParseConnectionString(s string) (*ConnInfo, error) {
 // ParseRequestConnectionString is ParseConnectionString for a request's
 // Connection-String header, which must also carry a password: Neon's proxy
 // refuses one without it before connecting, so a trust or peer authenticated
-// upstream never runs a request as whatever role it names.
+// upstream never runs a request as whatever role it names. As in Neon's proxy,
+// the database is the first path segment, so /db/extra runs against db.
 func ParseRequestConnectionString(s string) (*ConnInfo, error) {
-	ci, err := ParseConnectionString(s)
+	ci, err := parseConnectionString(s, true)
 	if err != nil {
 		return nil, err
 	}

@@ -87,6 +87,8 @@ A self-signed database certificate on a trusted network is `sslmode=require`; to
 
 `GET /health` answers `{"status":"ok"}` without touching the database.
 
+On SIGTERM or SIGINT it stops accepting requests and gives running ones 7 seconds to finish. It then cancels the rest on the database and exits within 3 more seconds, inside Docker's default 10 second stop timeout.
+
 ## Exposure
 
 Anyone who can reach this server and knows a database credential can use the database. So:

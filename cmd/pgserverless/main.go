@@ -87,7 +87,14 @@ func run() error {
 		admitHTTP, admitWS = guardBrowsers(isLoopback(addr), origins, admitHTTP, admitWS)
 	}
 	mux := newMux(admitHTTP, admitWS, origins)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	requestCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return requestCtx },
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -107,9 +114,29 @@ func run() error {
 	case <-ctx.Done():
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	return shutdown(srv, cancelRequests, drainTimeout, cancelTimeout)
+}
+
+// Docker sends SIGKILL 10 s after SIGTERM, so the drain and the cancel together end before it.
+const (
+	drainTimeout  = 7 * time.Second
+	cancelTimeout = 3 * time.Second
+)
+
+// shutdown lets running requests finish for drain, then cancels the rest so pgx sends PostgreSQL a CancelRequest
+// for each statement rather than leaving it running there, and waits cancelWait for their handlers to answer.
+func shutdown(srv *http.Server, cancelRequests context.CancelFunc, drain, cancelWait time.Duration) error {
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), drain)
+	defer cancelDrain()
+	err := srv.Shutdown(drainCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	slog.Warn("pgserverless: cancelling requests still running at shutdown", "drain", drain)
+	cancelRequests()
+	waitCtx, cancelWaitCtx := context.WithTimeout(context.Background(), cancelWait)
+	defer cancelWaitCtx()
+	return srv.Shutdown(waitCtx)
 }
 
 // httpAdmission sends every POST /sql to the database in DATABASE_URL as the

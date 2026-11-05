@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -610,5 +611,84 @@ func TestTokenlessGuardRefusesBeforeTheUpgrade(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /health: status %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestShutdownCancelsAStatementStillRunningAfterTheDrain(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT pg_sleep(60)", pgfake.Result{WaitForCancel: true})
+	static := pgserverless.StaticHTTPUpstream(pg.Addr())
+	admit := func(r *http.Request) (pgserverless.Upstream, error) {
+		up, err := static(r)
+		up.InsecureSkipVerify = true
+		return up, err
+	}
+
+	requestCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	ts := httptest.NewUnstartedServer(newMux(admit, admit, nil))
+	ts.Config.BaseContext = func(net.Listener) context.Context { return requestCtx }
+	ts.Start()
+	defer ts.Close()
+
+	type answer struct {
+		status int
+		body   string
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/sql", strings.NewReader(`{"query":"SELECT pg_sleep(60)"}`))
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		req.Header.Set("Connection-String", "postgres://u:p@db.example.test/app")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		answered <- answer{status: resp.StatusCode, body: string(b), err: err}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for pg.Sessions() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the request never reached the database")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	start := time.Now()
+	if err := shutdown(ts.Config, cancelRequests, 200*time.Millisecond, 5*time.Second); err != nil {
+		t.Fatalf("shutdown: %v, want nil once the cancelled request answered", err)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Errorf("shutdown took %v, want it to end soon after the cancel", elapsed)
+	}
+	if got := pg.CancelRequests(); got != 1 {
+		t.Errorf("database received %d CancelRequests, want 1: the statement was left running", got)
+	}
+	a := <-answered
+	if a.err != nil {
+		t.Fatalf("request: %v, want an answer before the server stopped", a.err)
+	}
+	if a.status != http.StatusBadRequest || !strings.Contains(a.body, "08P01") {
+		t.Errorf("request answered %d %s, want 400 with 08P01", a.status, a.body)
+	}
+}
+
+func TestShutdownReturnsAtOnceWithNothingRunning(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	cancelled := false
+	if err := shutdown(ts.Config, func() { cancelled = true }, time.Second, time.Second); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if cancelled {
+		t.Error("shutdown cancelled request contexts with no request running")
 	}
 }
