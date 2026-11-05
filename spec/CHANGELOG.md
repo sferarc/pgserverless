@@ -2,6 +2,10 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.8.0 (draft)
+
+- Section 4.3 requires an empty `queries` array to be answered 200 with `results` as `[]`, as Neon's proxy does. Client 1.1.0 sends that body for `sql.transaction([])`. The section used to require a non-empty array without saying what a server answers otherwise, and `openapi.yaml` gave `queries` `minItems: 1`, so a server answering 400 conformed to 0.7.0, broke that call, and does not conform to this version. The reference implementation already answered 200. The corpus checks it in `batch/empty-batch-is-200-with-no-results`, and its `version` stays 2, since the case is new.
+
 ## 0.7.0 (draft)
 
 - Section 9 requires a WebSocket upgrade to be accepted on any path, as Neon's proxy does, with `/v2` as the default the client derives. The client takes the path from its `wsProxy` setting, so a server that upgraded only on `/v2` conformed to 0.6.0, failed a client configured for `/v1`, and does not conform to this version. Section 2 says the same. The corpus checks it in `websocket/upgrade-on-any-path`, the schema lets a case use `/v1`, and the corpus `version` stays 2, since the case is new.

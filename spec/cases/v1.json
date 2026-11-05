@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.7.0",
+  "spec_version": "0.8.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -4083,6 +4083,26 @@
           "severity": "ERROR",
           "has_fields": ["code", "severity"]
         }
+      }
+    },
+    {
+      "id": "batch/empty-batch-is-200-with-no-results",
+      "level": 3,
+      "spec": "4.3",
+      "note": "An empty queries array is what client 1.1.0 sends for sql.transaction([]), with its own headers. Neon's proxy runs it as a transaction of no statements and answers 200 with an empty results array, so a server refusing it with 400 breaks that call.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "queries": []
+        }
+      },
+      "expect": {
+        "status": 200,
+        "results": []
       }
     },
     {

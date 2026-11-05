@@ -186,6 +186,7 @@ type Handler struct {
 	maxResponseBytes int64
 	startupTimeout   time.Duration
 	bodyTimeout      time.Duration
+	writeTimeout     time.Duration
 }
 
 // NewHandler returns a Handler that admits requests through admit.
@@ -314,7 +315,7 @@ func verifyIssuer(cs tls.ConnectionState, roots *x509.CertPool) error {
 // Query handles one serverless HTTP SQL request: single statement or batch,
 // object or array rows, native or raw-text values.
 func (h *Handler) Query(c echo.Context) error {
-	serveSQL(c.Response(), c.Request(), func() (Upstream, error) { return h.admit(c) }, h.dialErrorFor(c), h.countStatements, h.maxResponseBytes, h.bodyTimeout)
+	serveSQL(c.Response(), c.Request(), func() (Upstream, error) { return h.admit(c) }, h.dialErrorFor(c), h.countStatements, h.maxResponseBytes, h.bodyTimeout, h.writeTimeout)
 	return nil
 }
 
@@ -326,7 +327,7 @@ func (h *Handler) dialErrorFor(c echo.Context) func(error) {
 }
 
 // serveSQL is the transport-independent core of POST /sql.
-func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error), maxResponse int64, bodyTimeout time.Duration) {
+func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error), maxResponse int64, bodyTimeout, writeTimeout time.Duration) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 	limitBodyRead(w, r, bodyTimeout)
 
@@ -387,7 +388,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 	}
 	// Deferred in this order, the connection closes before the held response is sent.
 	held := newHeldResponse()
-	defer held.sendTo(w)
+	defer held.sendTo(w, writeTimeout)
 	defer conn.Close(context.Background())
 	w = held
 

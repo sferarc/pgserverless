@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.7.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.8.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -108,7 +108,7 @@ CORS, where relevant, MUST allow the vendor-prefixed headers, or a browser clien
 }
 ```
 
-`queries` MUST be a non-empty array. A server MAY impose a maximum batch size and MUST answer 400 when it is exceeded. The reference implementation's limit is 100.
+`queries` MUST be an array. An empty one is a batch of no statements, which client 1.1.0 sends for `sql.transaction([])`, and the server MUST answer it 200 with `results` as `[]`, as Neon's proxy does. A server MAY impose a maximum batch size and MUST answer 400 when it is exceeded. The reference implementation's limit is 100.
 
 An item MAY have an empty `query`, under the same rule as 4.2: it gets the empty result in its own position, and the items after it keep theirs. A server that joins the items into one simple-protocol query MUST answer such an item itself, because PostgreSQL skips an empty statement inside a joined query and every later result would land on the wrong item.
 

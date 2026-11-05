@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Postgres serverless HTTP and WebSocket protocol
-  version: "0.7.0"
+  version: "0.8.0"
   description: |
     OpenAPI description of the protocol specified in SPEC.md, at the same
     version. SPEC.md is the normative text; where this file and SPEC.md differ,
@@ -325,10 +325,10 @@ components:
           $ref: "#/components/schemas/Params"
         queries:
           description: |
-            A non-empty batch. A server MAY cap its size and MUST answer 400
+            The batch. An empty one is answered 200 with `results` as `[]`
+            (SPEC.md 4.3). A server MAY cap its size and MUST answer 400
             above the cap.
           type: array
-          minItems: 1
           items:
             $ref: "#/components/schemas/QueryItem"
         arrayMode:
