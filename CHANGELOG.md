@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.3
+
+### Patch Changes
+
+- a0290d8: The repository root has an `AGENTS.md` for coding agents: the build, test and conformance commands, the layout, and the rules a change keeps (SPEC.md is normative, a wire change lands with a spec changelog entry and a corpus case, the client and then Neon's proxy settle open behaviour). The README's Contributing section links it.
+
 ## 0.8.2
 
 ### Patch Changes
