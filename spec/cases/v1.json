@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.9.0",
+  "spec_version": "0.10.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -343,6 +343,68 @@
             "message"
           ]
         }
+      }
+    },
+    {
+      "id": "core/two-statements-in-one-query-are-refused",
+      "level": 1,
+      "spec": "4.2",
+      "fixture": "constrained",
+      "note": "Neon's proxy sends every query with the extended protocol, so PostgreSQL refuses a query of two statements before running either. A server that sends it in a simple Query message runs both and answers 200, and the follow-up request sees the inserted row.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "query": "INSERT INTO cf_constrained (id, email) VALUES (5, 'e@example.com'); SELECT 1"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "code": "42601",
+          "message_contains": "multiple commands"
+        }
+      },
+      "then": {
+        "request": {
+          "path": "/sql",
+          "headers": {
+            "array_mode": true,
+            "raw_text": true
+          },
+          "body": {
+            "query": "SELECT id FROM cf_constrained WHERE id = 5"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "row_count": 0,
+          "rows": []
+        }
+      }
+    },
+    {
+      "id": "core/trailing-semicolon-is-one-statement",
+      "level": 1,
+      "spec": "4.2",
+      "note": "No fixture needed. A semicolon and a comment after the one statement do not make a second statement, so a server counting statements itself must not refuse this.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "query": "SELECT 1 AS n; -- done"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "SELECT",
+        "row_count": 1
       }
     },
     {
@@ -4668,6 +4730,57 @@
           },
           "body": {
             "query": "SELECT id FROM cf_constrained WHERE id = 4"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "row_count": 0,
+          "rows": []
+        }
+      }
+    },
+    {
+      "id": "batch/two-statements-in-one-item-fail-the-batch",
+      "level": 3,
+      "spec": "4.3",
+      "fixture": "constrained",
+      "note": "An item of two statements is a failing statement, so the batch answers 42601 and the write before it does not persist. A server joining the items with ';' runs both statements of the item and answers 200 with results on the wrong items.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "INSERT INTO cf_constrained (id, email) VALUES (6, 'f@example.com')"
+            },
+            {
+              "query": "SELECT 1; SELECT 2"
+            },
+            {
+              "query": "SELECT 3"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "code": "42601",
+          "message_contains": "multiple commands"
+        }
+      },
+      "then": {
+        "request": {
+          "path": "/sql",
+          "headers": {
+            "array_mode": true,
+            "raw_text": true
+          },
+          "body": {
+            "query": "SELECT id FROM cf_constrained WHERE id = 6"
           }
         },
         "expect": {

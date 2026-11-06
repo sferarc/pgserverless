@@ -22,8 +22,8 @@ const (
 // "12:34:56"), and interval always carries a time part ("1 day 00:00:00" where
 // interval_out prints "1 day"). Both parse back to the same value, but a client
 // comparing the native response with raw-text mode, or with a value it wrote,
-// sees two strings. The interval follows the default IntervalStyle, postgres,
-// because the binary value the JSON path decodes carries no session style.
+// sees two strings. An interval follows the session IntervalStyle when it
+// arrives as a styledInterval (see useSessionIntervalStyle), and postgres otherwise.
 func clockText(v any) (string, bool) {
 	switch val := v.(type) {
 	case pgtype.Time:
@@ -36,6 +36,11 @@ func clockText(v any) (string, bool) {
 			return "", false
 		}
 		return intervalText(val), true
+	case styledInterval:
+		if !val.Valid {
+			return "", false
+		}
+		return intervalTextIn(val.Interval, val.style), true
 	}
 	return "", false
 }
@@ -51,11 +56,8 @@ func timeText(usec int64) string {
 // intervalText follows EncodeInterval's postgres style, including its sign
 // quirk: a field after a negative one carries an explicit "+" when positive.
 func intervalText(iv pgtype.Interval) string {
-	switch {
-	case iv.Months == math.MaxInt32 && iv.Days == math.MaxInt32 && iv.Microseconds == math.MaxInt64:
-		return "infinity"
-	case iv.Months == math.MinInt32 && iv.Days == math.MinInt32 && iv.Microseconds == math.MinInt64:
-		return "-infinity"
+	if s, ok := infiniteIntervalText(iv); ok {
+		return s
 	}
 
 	var b strings.Builder
@@ -102,6 +104,17 @@ func intervalText(iv pgtype.Interval) string {
 		writeClock(&b, mag)
 	}
 	return b.String()
+}
+
+// infiniteIntervalText spells the two infinite intervals, which every IntervalStyle prints alike.
+func infiniteIntervalText(iv pgtype.Interval) (string, bool) {
+	switch {
+	case iv.Months == math.MaxInt32 && iv.Days == math.MaxInt32 && iv.Microseconds == math.MaxInt64:
+		return "infinity", true
+	case iv.Months == math.MinInt32 && iv.Days == math.MinInt32 && iv.Microseconds == math.MinInt64:
+		return "-infinity", true
+	}
+	return "", false
 }
 
 // writeClock writes usec as HH:MM:SS[.ffffff] with the fraction trimmed.

@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.9.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.10.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -97,6 +97,8 @@ CORS, where relevant, MUST allow the vendor-prefixed headers, or a browser clien
 
 `query` MAY be empty, or hold only whitespace and comments. That is a query with no statement, which PostgreSQL answers with EmptyQueryResponse, and the server MUST answer it 200 with the result object of 5.1 carrying `fields` and `rows` as `[]`, `command` as `""` and `rowCount` as null. Parameters bound to such a query are an error, SQLSTATE `08P01` (`bind message supplies N parameters, but prepared statement "" requires 0`). A missing or null `query` is still a 400.
 
+`query` MUST NOT hold more than one statement. The server MUST answer a query holding two or more, such as `SELECT 1; SELECT 2`, with 400 and the error of 7.1 carrying SQLSTATE `42601` and PostgreSQL's message `cannot insert multiple commands into a prepared statement`, and MUST run none of its statements. That is what PostgreSQL answers when the query is sent with the extended protocol, as Neon's proxy sends every query. A semicolon, whitespace or a comment after the one statement does not make a second statement. A server that sends the query in a simple Query message runs every statement in it, so it MUST count the statements itself and refuse before sending.
+
 Members are matched by their exact name, as Neon's proxy matches them. A member whose name differs from `query` or `params` only in case, such as `QUERY`, is an unknown member, and the server MUST ignore it like any other unknown member. A body that repeats `query`, `params` or another member the server reads in this shape, such as the reference implementation's `arrayMode`, is not a single statement body, and unless 4.3 reads it as a batch the server MUST answer it 400. A server that matches names case-insensitively, or keeps the last of a repeated member, runs a statement Neon's proxy does not: `{"query": "SELECT 1", "QUERY": "SELECT 2"}` runs `SELECT 1`, and `{"query": "SELECT 1", "query": "SELECT 2"}` runs nothing.
 
 ### 4.3 Batch body
@@ -113,6 +115,8 @@ Members are matched by their exact name, as Neon's proxy matches them. A member 
 `queries` MUST be an array. An empty one is a batch of no statements, which client 1.1.0 sends for `sql.transaction([])`, and the server MUST answer it 200 with `results` as `[]`, as Neon's proxy does. A server MAY impose a maximum batch size and MUST answer 400 when it is exceeded. The reference implementation's limit is 100.
 
 An item MAY have an empty `query`, under the same rule as 4.2: it gets the empty result in its own position, and the items after it keep theirs. A server that joins the items into one simple-protocol query MUST answer such an item itself, because PostgreSQL skips an empty statement inside a joined query and every later result would land on the wrong item.
+
+An item MUST NOT hold more than one statement, under the same rule as 4.2. An item holding two or more is a failing statement: the batch is answered with its `42601` error and, as section 8 requires, nothing the batch did persists. A server that joins the items MUST count each item's statements before joining, because a joined item of two statements would otherwise run and push every later result onto the wrong item.
 
 A body carrying both `query` and `queries` is not produced by any client. The server MUST read it as Neon's proxy does, trying the single statement shape first. When the body is a single statement body under 4.2, the server MUST run it and ignore `queries` without validating it, a repeated `queries` included. When it is not one, because `query` is absent, null, not a string or repeated, or another member of that shape is invalid or repeated, and `queries` is present and not null, the body is a batch body: `{"query": "SELECT 1", "query": "SELECT 1", "queries": [{"query": "SELECT 2"}]}` runs the batch.
 

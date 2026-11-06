@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Postgres serverless HTTP and WebSocket protocol
-  version: "0.9.0"
+  version: "0.10.0"
   description: |
     OpenAPI description of the protocol specified in SPEC.md, at the same
     version. SPEC.md is the normative text; where this file and SPEC.md differ,
@@ -320,6 +320,8 @@ components:
           description: |
             The statement. Required when `queries` is absent. It MAY be empty,
             which is a query with no statement and gets the empty result (SPEC.md 4.2).
+            It holds at most one statement; two or more are refused with 400
+            and SQLSTATE 42601 (SPEC.md 4.2).
           type: string
         params:
           $ref: "#/components/schemas/Params"
@@ -344,7 +346,7 @@ components:
         - query
       properties:
         query:
-          description: May be empty, under the same rule as `SQLRequest.query`.
+          description: May be empty, and holds at most one statement, under the same rules as `SQLRequest.query`.
           type: string
         params:
           $ref: "#/components/schemas/Params"

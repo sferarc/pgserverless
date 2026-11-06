@@ -2,6 +2,10 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.10.0 (draft)
+
+- Sections 4.2 and 4.3 require a `query` holding more than one statement, such as `SELECT 1; SELECT 2`, to be refused with 400 and SQLSTATE `42601` (`cannot insert multiple commands into a prepared statement`) with none of it run, which is what PostgreSQL answers to the extended protocol Neon's proxy sends every query with. A batch item holding more than one statement fails the batch, so nothing the batch did persists. A semicolon or a comment after the one statement is still one statement. The sections said nothing about it, so a server sending the query in a simple Query message ran every statement, conformed to 0.9.0 and does not conform to this version; one joining batch items with `;` also put every later result on the wrong item. The reference implementation has refused such a query on both its paths since #2987. Three cases are new: `core/two-statements-in-one-query-are-refused` and `core/trailing-semicolon-is-one-statement` at level 1, and `batch/two-statements-in-one-item-fail-the-batch` at level 3. The corpus `version` stays 2, since no existing case's expectation changed.
+
 ## 0.9.0 (draft)
 
 - Sections 4.2 and 4.3 require body members to be matched by exact name, as Neon's proxy matches them. A member that differs from a known one only in case, such as `QUERY`, is ignored like any other unknown member, a single statement body that repeats a member it reads is refused with 400, and a body that is not a valid single statement but carries `queries` runs as a batch, a repeated `query` included. A batch body that repeats `queries`, or an item that repeats a member, is refused with 400. The sections said nothing about member names, so a server reading the body case-insensitively or keeping the last of a repeated member conformed to 0.8.0, ran a different statement from the one Neon runs, and does not conform to this version. The reference implementation has read the body this way since #3554.
