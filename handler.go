@@ -2,7 +2,6 @@ package pgserverless
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -432,22 +431,13 @@ func writeAdmissionError(w http.ResponseWriter, err error) {
 // decodeSQLRequest reads and validates the request body. Splitting it out of
 // serveSQL keeps one function per decision: this one decides whether the
 // request is well formed, serveSQL decides what to do with a well formed one.
+//
+// The body is read as Neon's proxy reads it: as a single statement (query,
+// params, arrayMode) when it is one, and otherwise as a batch (queries).
+// Members match by exact name, any other member is ignored, and a repeated
+// member makes its shape invalid, as serde's derived Deserialize does.
 func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
-	// queries is decoded only in batch mode: Neon skips it unread when query is a string.
-	var body struct {
-		SQLRequest
-		Queries json.RawMessage `json:"queries"`
-	}
-	dec := json.NewDecoder(r.Body)
-	// A float64 rounds an integer past 2^53, so a bigint id sent as a JSON number bound as a different id.
-	dec.UseNumber()
-	err := dec.Decode(&body)
-	if err == nil {
-		// Neon's serde_json refuses anything but whitespace after the value; read leniently, a second value was silently dropped.
-		if _, terr := dec.Token(); !errors.Is(terr, io.EOF) {
-			err = cmp.Or(terr, ErrInvalidRequest)
-		}
-	}
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return nil, fmt.Errorf("%w (max is %d bytes)", ErrRequestTooLarge, MaxRequestBodyBytes)
@@ -457,47 +447,124 @@ func decodeSQLRequest(r *http.Request) (*SQLRequest, error) {
 		}
 		return nil, ErrInvalidRequest
 	}
-	req := body.SQLRequest
-
-	// Neon parses the body as a single statement before a batch, so a string query wins over queries.
-	// An empty query is valid: Neon answers it 200 with no fields and no command.
-	if req.Query != nil {
-		return &req, nil
+	// Neon's serde_json refuses anything but whitespace after the value; read leniently, a second value was silently dropped.
+	if !json.Valid(raw) {
+		return nil, ErrInvalidRequest
 	}
-	if len(body.Queries) == 0 || string(body.Queries) == "null" {
-		return nil, ErrMissingQuery
-	}
-	items, err := decodeBatchItems(body.Queries)
+	m, err := objectMembers(raw)
 	if err != nil {
 		return nil, err
 	}
-	req.Queries = items
+
+	// Neon parses the body as a single statement before a batch, so a string query wins over queries.
+	// An empty query is valid: Neon answers it 200 with no fields and no command.
+	req, singleErr := decodeSingle(m)
+	if singleErr == nil {
+		return req, nil
+	}
+	queries := m["queries"]
+	if len(queries) == 0 || (len(queries) == 1 && string(queries[0]) == "null") {
+		return nil, singleErr
+	}
+	if len(queries) > 1 {
+		return nil, ErrInvalidRequest
+	}
+	items, err := decodeBatchItems(queries[0])
+	if err != nil {
+		return nil, err
+	}
+	batch := &SQLRequest{Queries: items}
+	// arrayMode beside queries is this server's extension; Neon ignores it.
+	if err := m.decode("arrayMode", &batch.ArrayMode); err != nil {
+		return nil, ErrInvalidRequest
+	}
+	return batch, nil
+}
+
+// decodeSingle reads the single statement shape, or says why the body is not one.
+func decodeSingle(m members) (*SQLRequest, error) {
+	var req SQLRequest
+	if err := m.decode("query", &req.Query); err != nil {
+		return nil, ErrInvalidRequest
+	}
+	if req.Query == nil {
+		return nil, ErrMissingQuery
+	}
+	if m.decode("params", &req.Params) != nil || m.decode("arrayMode", &req.ArrayMode) != nil {
+		return nil, ErrInvalidRequest
+	}
 	return &req, nil
 }
 
 func decodeBatchItems(raw json.RawMessage) ([]QueryItem, error) {
-	// Each item's query is decoded as a pointer, so an item without one is told apart from an empty one.
-	var items []struct {
-		QueryItem
-		Query *string `json:"query"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&items); err != nil {
+	var elems []json.RawMessage
+	if err := json.Unmarshal(raw, &elems); err != nil {
 		return nil, ErrInvalidRequest
 	}
-	if len(items) > MaxBatchQueries {
+	if len(elems) > MaxBatchQueries {
 		return nil, fmt.Errorf("batch too large: max %d queries", MaxBatchQueries)
 	}
-	queries := make([]QueryItem, len(items))
-	for i, item := range items {
+	queries := make([]QueryItem, len(elems))
+	for i, elem := range elems {
+		m, err := objectMembers(elem)
+		if err != nil {
+			return nil, err
+		}
+		// The query is decoded as a pointer, so an item without one is told apart from an empty one.
+		var query *string
+		if m.decode("query", &query) != nil || m.decode("params", &queries[i].Params) != nil || m.decode("arrayMode", &queries[i].ArrayMode) != nil {
+			return nil, ErrInvalidRequest
+		}
 		// Neon refuses such a body with 400; read as "", the item ran as an empty statement and the batch answered 200.
-		if item.Query == nil {
+		if query == nil {
 			return nil, fmt.Errorf("%w in queries[%d]", ErrMissingQuery, i)
 		}
-		queries[i] = QueryItem{Query: *item.Query, Params: item.Params, ArrayMode: item.ArrayMode}
+		queries[i].Query = *query
 	}
 	return queries, nil
+}
+
+// members holds a JSON object's members by exact name, every occurrence kept.
+// encoding/json would match a struct field case-insensitively and keep the last
+// of a repeated member, so {"query":"SELECT 1","QUERY":"SELECT 2"} ran SELECT 2
+// where Neon runs SELECT 1.
+type members map[string][]json.RawMessage
+
+// objectMembers splits raw, which must be valid JSON, into its members; anything but an object is ErrInvalidRequest.
+func objectMembers(raw []byte) (members, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, ErrInvalidRequest
+	}
+	m := members{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, ErrInvalidRequest
+		}
+		name, _ := tok.(string)
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, ErrInvalidRequest
+		}
+		m[name] = append(m[name], v)
+	}
+	return m, nil
+}
+
+// decode reads the member called name into v and leaves v alone when it is absent. A repeated member is an error.
+func (m members) decode(name string, v any) error {
+	switch vs := m[name]; len(vs) {
+	case 0:
+		return nil
+	case 1:
+		dec := json.NewDecoder(bytes.NewReader(vs[0]))
+		// A float64 rounds an integer past 2^53, so a bigint id sent as a JSON number bound as a different id.
+		dec.UseNumber()
+		return dec.Decode(v)
+	default:
+		return fmt.Errorf("member %q appears %d times", name, len(vs))
+	}
 }
 
 // requestArrayMode lets a single query's arrayMode override the header either way, as Neon and batchArrayMode do.

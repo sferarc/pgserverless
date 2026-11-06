@@ -60,6 +60,8 @@ Four things about that shape are deliberate.
 
 An error case can be tolerant the same way. Where the SQLSTATE depends on how a server reaches PostgreSQL, the case lists the codes it accepts in `error.codes` instead of naming one in `error.code`.
 
+A case whose body no JSON object can stand for gives `body` as a string, and the harness sends that string's text as the body. A body that repeats a member is the reason: most JSON parsers keep one occurrence when they read the corpus, so the repeat would never reach the server. `core/repeated-query-is-refused` is one.
+
 An error case may also check the text. `error.message_contains` must appear in the error's `message`, compared case-sensitively, and each string in `error.must_not_contain` must appear nowhere in the response body, read both as sent and with its JSON strings decoded. That second check is how a case shows a connection string is not leaked in an error (spec section 7.3).
 
 `row_count` tells null from zero. `null` requires the result's `rowCount` to be JSON null, which a command tag with no count gives (spec section 5.1), and an integer requires that number as a JSON number. Either fails a result without a `rowCount` member.

@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.8.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.9.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -97,6 +97,8 @@ CORS, where relevant, MUST allow the vendor-prefixed headers, or a browser clien
 
 `query` MAY be empty, or hold only whitespace and comments. That is a query with no statement, which PostgreSQL answers with EmptyQueryResponse, and the server MUST answer it 200 with the result object of 5.1 carrying `fields` and `rows` as `[]`, `command` as `""` and `rowCount` as null. Parameters bound to such a query are an error, SQLSTATE `08P01` (`bind message supplies N parameters, but prepared statement "" requires 0`). A missing or null `query` is still a 400.
 
+Members are matched by their exact name, as Neon's proxy matches them. A member whose name differs from `query` or `params` only in case, such as `QUERY`, is an unknown member, and the server MUST ignore it like any other unknown member. A body that repeats `query`, `params` or another member the server reads in this shape, such as the reference implementation's `arrayMode`, is not a single statement body, and unless 4.3 reads it as a batch the server MUST answer it 400. A server that matches names case-insensitively, or keeps the last of a repeated member, runs a statement Neon's proxy does not: `{"query": "SELECT 1", "QUERY": "SELECT 2"}` runs `SELECT 1`, and `{"query": "SELECT 1", "query": "SELECT 2"}` runs nothing.
+
 ### 4.3 Batch body
 
 ```json
@@ -112,7 +114,9 @@ CORS, where relevant, MUST allow the vendor-prefixed headers, or a browser clien
 
 An item MAY have an empty `query`, under the same rule as 4.2: it gets the empty result in its own position, and the items after it keep theirs. A server that joins the items into one simple-protocol query MUST answer such an item itself, because PostgreSQL skips an empty statement inside a joined query and every later result would land on the wrong item.
 
-A body carrying both `query` and `queries` is not produced by any client. When `query` is a string, the server MUST run it as the single statement of 4.2 and ignore `queries` without validating it, which is how Neon's proxy reads the body: it tries the single statement shape first. When `query` is absent or null, `queries` selects batch mode.
+A body carrying both `query` and `queries` is not produced by any client. The server MUST read it as Neon's proxy does, trying the single statement shape first. When the body is a single statement body under 4.2, the server MUST run it and ignore `queries` without validating it, a repeated `queries` included. When it is not one, because `query` is absent, null, not a string or repeated, or another member of that shape is invalid or repeated, and `queries` is present and not null, the body is a batch body: `{"query": "SELECT 1", "query": "SELECT 1", "queries": [{"query": "SELECT 2"}]}` runs the batch.
+
+The members of the batch body and of each item are matched by exact name under the same rule as 4.2. A batch body that repeats `queries`, or an item that repeats `query`, `params` or another member the server reads, MUST be answered 400.
 
 ### 4.4 Parameter encoding
 

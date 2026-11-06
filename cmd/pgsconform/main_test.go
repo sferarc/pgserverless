@@ -356,6 +356,35 @@ func TestThenObservesWhatTheRequestLeftBehind(t *testing.T) {
 	}
 }
 
+// A repeated member cannot be written as a JSON object a parser keeps, so the case sends the body as a string.
+func TestStringBodyIsSentAsItsText(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"string", `"{\"query\":\"SELECT 1\",\"query\":\"SELECT 2\"}"`, `{"query":"SELECT 1","query":"SELECT 2"}`},
+		{"object", `{"query":"SELECT 1"}`, `{"query":"SELECT 1"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				got = string(body)
+				_, _ = w.Write([]byte(`{"command":"SELECT","rowCount":0,"rows":[]}`))
+			}))
+			defer srv.Close()
+			c := kase{ID: "x", Request: requestSpec{Path: "/sql", Body: json.RawMessage(tt.body)}}
+			status := http.StatusOK
+			(&runner{server: srv.URL}).runHTTP(context.Background(), c, expectation{Status: &status}, target{server: srv.URL})
+			if got != tt.want {
+				t.Fatalf("server received %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadCorpusRefusesThenOnAWebSocketCase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "c.json")
 	body := `{"spec_version":"0.5.0","version":2,"cases":[{"id":"x","request":{"path":"/v2","method":"GET"},"expect":{"status":101},"then":{"request":{"path":"/sql"},"expect":{"status":200}}}]}`

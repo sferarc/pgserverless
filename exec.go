@@ -300,7 +300,8 @@ func batchArrayMode(q QueryItem, arrayMode bool) bool {
 // driver expects so its own type parsers run client-side. Otherwise values are
 // pgx-decoded and coerced to the Neon driver's native-type contract. m is the
 // connection's type map, which the coercion uses to render back to PostgreSQL
-// text the types whose Go decode does not marshal to it.
+// text the types whose Go decode does not marshal to it. In native mode m's
+// timestamptz types are re-registered to scan into the session's TimeZone.
 func RowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool) (*QueryResult, error) {
 	return rowsToResult(rows, m, arrayMode, rawText, nil)
 }
@@ -320,6 +321,10 @@ func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget 
 			DataTypeModifier: d.TypeModifier,
 			Format:           "text",
 		}
+	}
+
+	if !rawText {
+		useSessionTimeZone(m, rows.Conn())
 	}
 
 	var resultRows []any

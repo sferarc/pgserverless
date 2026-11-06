@@ -2,6 +2,11 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.9.0 (draft)
+
+- Sections 4.2 and 4.3 require body members to be matched by exact name, as Neon's proxy matches them. A member that differs from a known one only in case, such as `QUERY`, is ignored like any other unknown member, a single statement body that repeats a member it reads is refused with 400, and a body that is not a valid single statement but carries `queries` runs as a batch, a repeated `query` included. A batch body that repeats `queries`, or an item that repeats a member, is refused with 400. The sections said nothing about member names, so a server reading the body case-insensitively or keeping the last of a repeated member conformed to 0.8.0, ran a different statement from the one Neon runs, and does not conform to this version. The reference implementation has read the body this way since #3554.
+- A corpus case may give `body` as a string, which the harness sends as the body's text, so a case can send a body that repeats a member. Three cases are new: `core/differently-cased-member-is-ignored` and `core/repeated-query-is-refused` at level 1, and `batch/repeated-query-beside-queries-runs-the-batch` at level 3. The corpus `version` stays 2, since no existing case's expectation changed.
+
 ## 0.8.0 (draft)
 
 - Section 4.3 requires an empty `queries` array to be answered 200 with `results` as `[]`, as Neon's proxy does. Client 1.1.0 sends that body for `sql.transaction([])`. The section used to require a non-empty array without saying what a server answers otherwise, and `openapi.yaml` gave `queries` `minItems: 1`, so a server answering 400 conformed to 0.7.0, broke that call, and does not conform to this version. The reference implementation already answered 200. The corpus checks it in `batch/empty-batch-is-200-with-no-results`, and its `version` stays 2, since the case is new.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.4
+
+### Patch Changes
+
+- 3facb35: `POST /sql` reads body members by their exact names and refuses a repeated one, as Neon's proxy does. A differently cased member such as `QUERY` is ignored instead of replacing `query`, and a body that repeats `query`, `params`, `arrayMode` or `queries`, or a member of a batch item, is answered 400 instead of running the last copy. When the single statement shape is invalid, a valid `queries` still runs as a batch, as in Neon.
+- d64258f: `cmd/pgserverless` now closes a keep-alive connection that has been idle for 2 minutes. Its server set no idle timeout, so a connection left open between requests held its socket and goroutine for as long as the client kept it, and enough of them ran the server out of file descriptors. WebSocket tunnels are not affected.
+
 ## 0.9.3
 
 ### Patch Changes

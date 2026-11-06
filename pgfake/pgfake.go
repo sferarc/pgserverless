@@ -69,6 +69,8 @@ type PG struct {
 
 	// dbEncoding is the database's encoding and so a session's client_encoding when its startup names none; empty is UTF8.
 	dbEncoding string
+	// timeZone is the TimeZone a session reports at startup; empty reports none.
+	timeZone string
 }
 
 // Result is the canned response for one query.
@@ -151,6 +153,13 @@ func (f *PG) SetDatabaseEncoding(enc string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.dbEncoding = enc
+}
+
+// SetTimeZone makes every new session report tz as its TimeZone, as PostgreSQL does at startup.
+func (f *PG) SetTimeZone(tz string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.timeZone = tz
 }
 
 // addr returns the host:port the fake backend listens on.
@@ -387,6 +396,12 @@ func (f *PG) handle(conn net.Conn) {
 	// protocol queries with arguments. A real PostgreSQL server always reports
 	// this.
 	be.Send(&pgproto3.ParameterStatus{Name: "standard_conforming_strings", Value: "on"})
+	f.mu.Lock()
+	timeZone := f.timeZone
+	f.mu.Unlock()
+	if timeZone != "" {
+		be.Send(&pgproto3.ParameterStatus{Name: "TimeZone", Value: timeZone})
+	}
 	pid, cancelled := f.register()
 	defer f.unregister(pid)
 	be.Send(&pgproto3.BackendKeyData{ProcessID: pid, SecretKey: []byte{0, 0, 0, 1}})

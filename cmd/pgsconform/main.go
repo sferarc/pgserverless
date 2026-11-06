@@ -194,6 +194,15 @@ type requestSpec struct {
 	Body    json.RawMessage `json:"body"`
 }
 
+// requestBody is the body to send. A JSON string in the corpus is sent as its text, which is how a case sends a body no JSON object can stand for, such as one repeating a member.
+func requestBody(body json.RawMessage) []byte {
+	var text string
+	if bytes.HasPrefix(body, []byte(`"`)) && json.Unmarshal(body, &text) == nil {
+		return []byte(text)
+	}
+	return body
+}
+
 // headerSpec is symbolic. The corpus says what the request means, and this
 // program decides which spelling carries it, which is what lets one case test
 // both spellings and their precedence.
@@ -389,7 +398,7 @@ func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation, t target)
 		defer cancel()
 	}
 	late := func(err error) bool { return exp.WithinMS > 0 && errors.Is(err, context.DeadlineExceeded) }
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.server+c.Request.Path, bytes.NewReader(c.Request.Body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.server+c.Request.Path, bytes.NewReader(requestBody(c.Request.Body)))
 	if err != nil {
 		return outcomeFail, err.Error()
 	}

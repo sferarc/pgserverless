@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.8.0",
+  "spec_version": "0.9.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -294,6 +294,55 @@
             }
           }
         ]
+      }
+    },
+    {
+      "id": "core/differently-cased-member-is-ignored",
+      "level": 1,
+      "spec": "4.2",
+      "note": "No fixture needed. Neon's proxy matches body members by exact name, so QUERY is an unknown member it ignores and query runs. A server matching names case-insensitively runs the other statement.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 'query' AS v",
+          "QUERY": "SELECT 'QUERY' AS v"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "command": "SELECT",
+        "row_count": 1,
+        "rows": [
+          {
+            "v": {
+              "json": "\"query\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "core/repeated-query-is-refused",
+      "level": 1,
+      "spec": "4.2",
+      "note": "No fixture needed. The body is a string because a JSON object cannot keep a repeated member through most parsers. Neon's proxy refuses a body that repeats query with 400. A server keeping the last occurrence runs SELECT 2 and answers 200.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": "{\"query\":\"SELECT 1\",\"query\":\"SELECT 2\"}"
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "has_fields": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -4103,6 +4152,35 @@
       "expect": {
         "status": 200,
         "results": []
+      }
+    },
+    {
+      "id": "batch/repeated-query-beside-queries-runs-the-batch",
+      "level": 3,
+      "spec": "4.3",
+      "note": "The body is a string because a JSON object cannot keep a repeated member through most parsers. A repeated query makes the body an invalid single statement, so Neon's proxy reads it as a batch and runs queries. A server refusing it, or keeping the last query, does not answer the batch's result.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": "{\"query\":\"SELECT 'single' AS v\",\"query\":\"SELECT 'single' AS v\",\"queries\":[{\"query\":\"SELECT 'batch' AS v\"}]}"
+      },
+      "expect": {
+        "status": 200,
+        "results": [
+          {
+            "command": "SELECT",
+            "row_count": 1,
+            "rows": [
+              {
+                "v": {
+                  "json": "\"batch\""
+                }
+              }
+            ]
+          }
+        ]
       }
     },
     {
