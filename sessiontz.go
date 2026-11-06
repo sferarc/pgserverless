@@ -22,9 +22,9 @@ var (
 // useSessionTimeZone makes m decode timestamptz, alone and inside arrays, ranges
 // and records, into the session's TimeZone, so timestamptzText spells it as
 // timestamptz_out does. pgx keeps the latest TimeZone PostgreSQL reported, so a
-// SET applies to later requests and to later items of a batch that takes one
-// round trip per item; a pipelined batch hears of it only at ReadyForQuery,
-// after its items are read. m's types are replaced only when the zone changes.
+// SET applies to later requests and to later items of a native-mode batch, which
+// takes one round trip per item (executeBatch pipelines only raw text, where
+// PostgreSQL spells the value itself). m's types are replaced only when the zone changes.
 func useSessionTimeZone(m *pgtype.Map, conn *pgx.Conn) {
 	if m == nil || conn == nil || conn.PgConn() == nil {
 		return
@@ -67,10 +67,18 @@ func sessionLocation(name string) *time.Location {
 		}
 	}
 	sessionLocationsMu.Lock()
-	if len(sessionLocations) < maxSessionLocations {
-		sessionLocations[name] = loc
+	defer sessionLocationsMu.Unlock()
+	if cached, ok := sessionLocations[name]; ok {
+		return cached
 	}
-	sessionLocationsMu.Unlock()
+	// Evicting rather than refusing keeps the latest zone cached, so useSessionTimeZone's pointer check still matches it.
+	if len(sessionLocations) >= maxSessionLocations {
+		for k := range sessionLocations {
+			delete(sessionLocations, k)
+			break
+		}
+	}
+	sessionLocations[name] = loc
 	return loc
 }
 

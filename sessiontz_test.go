@@ -3,9 +3,11 @@ package pgserverless
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -178,6 +180,98 @@ func TestSessionLocation(t *testing.T) {
 		})
 	}
 	assert.Same(t, time.UTC, sessionLocation("Local"))
+}
+
+// Past the cap a zone used to get a fresh *time.Location on every lookup, so
+// useSessionTimeZone re-registered the timestamptz types on every query.
+func TestSessionLocationStaysCachedPastTheCap(t *testing.T) {
+	sessionLocationsMu.Lock()
+	saved := sessionLocations
+	sessionLocations = map[string]*time.Location{}
+	sessionLocationsMu.Unlock()
+	t.Cleanup(func() {
+		sessionLocationsMu.Lock()
+		sessionLocations = saved
+		sessionLocationsMu.Unlock()
+	})
+
+	for i := range maxSessionLocations + 10 {
+		sessionLocation(fmt.Sprintf("<Z%d>-01", i))
+	}
+	const name = "<+02>-02"
+	first := sessionLocation(name)
+	assert.Same(t, first, sessionLocation(name))
+	sessionLocationsMu.Lock()
+	assert.Len(t, sessionLocations, maxSessionLocations)
+	sessionLocationsMu.Unlock()
+
+	m := pgtype.NewMap()
+	pg := pgfake.New(t)
+	pg.SetTimeZone(name)
+	conn, err := Dial(context.Background(), Upstream{Addr: pg.Addr(), User: "u", Database: "db", InsecureSkipVerify: true}, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	useSessionTimeZone(m, conn)
+	tstz, _ := m.TypeForOID(pgtype.TimestamptzOID)
+	useSessionTimeZone(m, conn)
+	again, _ := m.TypeForOID(pgtype.TimestamptzOID)
+	assert.Same(t, tstz, again, "an unchanged zone must not re-register the types")
+}
+
+// A SET TIME ZONE item applies to the timestamptz item after it on every batch
+// path, as PostgreSQL itself spells it.
+func TestSessionTimeZoneInBatchAgainstPostgres(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	queries := []QueryItem{
+		{Query: "SET TIME ZONE 'Asia/Kolkata'"},
+		{Query: "SELECT '2024-01-01 10:00:00+00'::timestamptz AS ts"},
+	}
+	one := func(string) (int, error) { return 1, nil }
+	for _, tc := range []struct {
+		name string
+		mode pgx.QueryExecMode
+		run  func(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context)
+	}{
+		{"native", pgx.QueryExecModeCacheStatement, func(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context) {
+			executeBatch(w, conn, ctx, queries, true, false, txnOptions{}, nil)
+		}},
+		{"raw text", pgx.QueryExecModeExec, func(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context) {
+			executeBatch(w, conn, ctx, queries, true, true, txnOptions{}, nil)
+		}},
+		{"simple pipeline", pgx.QueryExecModeSimpleProtocol, func(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context) {
+			executeBatchSimple(w, conn, ctx, queries, one, true, txnOptions{}, nil)
+		}},
+		{"simple transaction", pgx.QueryExecModeSimpleProtocol, func(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context) {
+			executeBatchSimple(w, conn, ctx, queries, one, true, txnOptions{readOnly: true}, nil)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cfg, err := pgx.ParseConfig(url)
+			require.NoError(t, err)
+			cfg.DefaultQueryExecMode = tc.mode
+			cfg.RuntimeParams["timezone"] = "UTC"
+			conn, err := pgx.ConnectConfig(ctx, cfg)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = conn.Close(ctx) })
+
+			rec := httptest.NewRecorder()
+			tc.run(rec, conn, ctx)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			var body struct {
+				Results []struct {
+					Rows [][]any `json:"rows"`
+				} `json:"results"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			require.Len(t, body.Results, 2)
+			require.Len(t, body.Results[1].Rows, 1)
+			assert.Equal(t, "2024-01-01 15:30:00+05:30", body.Results[1].Rows[0][0])
+		})
+	}
 }
 
 // Native mode must match PostgreSQL's own text after a SET TIME ZONE on the same session.

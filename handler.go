@@ -397,7 +397,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 	budget := &responseBudget{max: maxResponse}
 	switch {
 	case req.Queries != nil && simple:
-		executeBatchSimple(w, conn, queryCtx, req.Queries, count, arrayMode, rawText, txnOpts, budget)
+		executeBatchSimple(w, conn, queryCtx, req.Queries, count, arrayMode, txnOpts, budget)
 		return
 	case req.Queries != nil:
 		executeBatch(w, conn, queryCtx, req.Queries, arrayMode, rawText, txnOpts, budget)

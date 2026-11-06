@@ -45,17 +45,19 @@ func executeSingle(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, q
 }
 
 // executeBatch runs a batch inside BEGIN and COMMIT, as Neon does; PostgreSQL
-// refuses LOCK TABLE and SAVEPOINT in an implicit-transaction pipeline.
+// refuses LOCK TABLE and SAVEPOINT in an implicit-transaction pipeline. Only a
+// raw-text batch is pipelined: native mode reads the session TimeZone per item,
+// and a pipeline hears of an in-batch SET only after its last item.
 func executeBatch(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
 	if !rawText {
 		executeBatchInOrder(w, conn, ctx, queries, arrayMode, opts, budget)
 		return
 	}
-	executeBatchTxn(w, conn, ctx, queries, arrayMode, rawText, opts, budget)
+	executeBatchTxn(w, conn, ctx, queries, arrayMode, opts, budget)
 }
 
 // executeBatchPipeline runs a governed simple-protocol batch as one joined query, which PostgreSQL runs as an implicit transaction block.
-func executeBatchPipeline(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, budget *responseBudget) {
+func executeBatchPipeline(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode bool, budget *responseBudget) {
 	batch := &pgx.Batch{}
 	for _, q := range queries {
 		if !emptyItem(q) {
@@ -77,7 +79,7 @@ func executeBatchPipeline(w http.ResponseWriter, conn *pgx.Conn, ctx context.Con
 			writeQueryError(ctx, w, err)
 			return
 		}
-		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
+		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), true, budget)
 		rows.Close()
 		if err != nil {
 			writeQueryError(ctx, w, err)
@@ -95,7 +97,7 @@ func executeBatchPipeline(w http.ResponseWriter, conn *pgx.Conn, ctx context.Con
 // item must be at most one complete statement, an item with none is answered
 // without being sent, and a newline on both sides of every ';' keeps a trailing
 // -- comment from swallowing the next item.
-func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
+func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, count func(string) (int, error), arrayMode bool, opts txnOptions, budget *responseBudget) {
 	// executeBatchTxn queues BEGIN before the items and may queue COMMIT after them.
 	txn := !opts.isDefault() || budget.capped()
 	joined := make([]QueryItem, len(queries))
@@ -118,10 +120,10 @@ func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Conte
 		joined[i] = q
 	}
 	if txn {
-		executeBatchTxn(w, conn, ctx, joined, arrayMode, rawText, opts, budget)
+		executeBatchTxn(w, conn, ctx, joined, arrayMode, opts, budget)
 		return
 	}
-	executeBatchPipeline(w, conn, ctx, joined, arrayMode, rawText, budget)
+	executeBatchPipeline(w, conn, ctx, joined, arrayMode, budget)
 }
 
 // executeBatchTxn runs the batch inside an explicit transaction with the
@@ -134,7 +136,7 @@ func executeBatchSimple(w http.ResponseWriter, conn *pgx.Conn, ctx context.Conte
 // statement before the handler reads past the cap, so COMMIT is sent only once
 // every result fit; a 507 closes the connection with the transaction still
 // open, which rolls it back, as Neon does.
-func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode, rawText bool, opts txnOptions, budget *responseBudget) {
+func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode bool, opts txnOptions, budget *responseBudget) {
 	deferCommit := budget.capped()
 	batch := &pgx.Batch{}
 	batch.Queue(opts.beginSQL())
@@ -167,7 +169,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 			writeQueryError(ctx, w, err)
 			return
 		}
-		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), rawText, budget)
+		result, err := rowsToResult(rows, conn.TypeMap(), batchArrayMode(queries[i], arrayMode), true, budget)
 		stopOversized(ctx, conn, err)
 		rows.Close()
 		if err != nil {
