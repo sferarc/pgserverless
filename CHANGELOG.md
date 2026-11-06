@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.3
+
+### Patch Changes
+
+- 70910c8: Native mode asks PostgreSQL for `point`, `lseg`, `path`, `box`, `polygon`, `line`, `circle` and their arrays as text, so each coordinate is spelled in the session's `extra_float_digits` as Neon's proxy returns it. Under `extra_float_digits = 0`, `point(0.1::float8 + 0.2, 1)` now answers `(0.3,1)` instead of `(0.30000000000000004,1)`. Output under the default setting is unchanged.
+- feb529e: Native mode asks PostgreSQL for an anonymous `record` and `record[]` as text and returns record_out's text, as Neon's proxy does. A record with a `money`, `timetz`, `pg_lsn`, enum or other field type pgx has no codec for came back as a JSON array of base64 strings, and `bytea` and float fields ignored `bytea_output` and `extra_float_digits`. Every field is now spelled by PostgreSQL in the session's settings.
+- 0af93b3: `StaticUpstream`, `StaticHTTPUpstream` and `cmd/pgserverless` refuse a `POST /sql` whose connection string has no path at all, such as `postgres://u:pw@h` or `postgres://u:pw@h?sslmode=require`, with 400 `missing database name` before dialing, as Neon's proxy does. Such a request used to run against the database named after the user. A path of `/` still does, as it does on Neon, and `ParseConnectionString` keeps libpq's default for a `DATABASE_URL`.
+
 ## 0.10.2
 
 ### Patch Changes
