@@ -108,6 +108,8 @@ An implementation claims a level only when that level has zero failures and zero
 
 `pgsconform` writes the report to the file `-report` names, or to stdout with `-report -`, in which case its human summary goes to stderr. It exits 0 when every case that ran passed, 1 when one or more cases failed, and 2 on a usage or setup error (bad flags, an unreadable corpus, fixtures that did not apply, a server under test that does not answer HTTP). Exit 2 means no case was judged and no report was written, so a caller can tell a failing server from a broken run.
 
+A server that requires a bearer token, as `cmd/pgserverless` does with `PGSERVERLESS_AUTH_TOKEN`, is checked with the token in the `PGSCONFORM_AUTH_TOKEN` environment variable. `pgsconform` sends it as `Authorization: Bearer` on every request to `-server`, the `unresolvable_host` cases included, and never to `-refusing-server`, which may be the same server started with a token the harness does not send.
+
 ## 6. What this cannot check
 
 Worth writing down so the corpus is not oversold.

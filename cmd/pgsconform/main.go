@@ -17,6 +17,11 @@
 // on a usage or setup error (flags, corpus, fixtures, an unreachable server),
 // in which case no case was judged. -report - writes the JSON report to stdout
 // and the summary to stderr.
+//
+// A server that requires a bearer token, such as cmd/pgserverless with
+// PGSERVERLESS_AUTH_TOKEN, gets it from PGSCONFORM_AUTH_TOKEN, an environment
+// variable so the secret stays out of the process list. It is sent to -server
+// only, never to -refusing-server.
 package main
 
 import (
@@ -119,6 +124,7 @@ func run(args []string, stdout, stderr io.Writer, apply fixtureApplier) int {
 	runner := &runner{
 		server:           server,
 		connString:       *connString,
+		authToken:        os.Getenv("PGSCONFORM_AUTH_TOKEN"),
 		unresolvableHost: *badHost,
 		refusingServer:   strings.TrimRight(*refusing, "/"),
 		singleDatabase:   *singleDB,
@@ -328,31 +334,41 @@ const (
 type runner struct {
 	server           string
 	connString       string
+	authToken        string
 	unresolvableHost string
 	refusingServer   string
 	singleDatabase   bool
 }
 
-// target is where a case is sent: the server, and the Host header to send when it is not the server's own.
+// target is where a case is sent: the server, the Host header to send when it is not the server's own, and the bearer token it requires.
 type target struct {
-	server string
-	host   string
+	server    string
+	host      string
+	authToken string
+}
+
+// authorize sends the target's bearer token, as the Neon driver's authToken option does.
+func (t target) authorize(h http.Header) {
+	if t.authToken != "" {
+		h.Set("Authorization", "Bearer "+t.authToken)
+	}
 }
 
 // targetFor arranges what a case requires, or says why it cannot.
 func (r *runner) targetFor(c kase) (target, string) {
 	switch c.Requires {
 	case "", "websocket":
-		return target{server: r.server}, ""
+		return target{server: r.server, authToken: r.authToken}, ""
 	case "unresolvable_host":
 		if r.unresolvableHost == "" {
 			return target{}, "harness cannot arrange \"unresolvable_host\": pass -unresolvable-host"
 		}
-		return target{server: r.server, host: r.unresolvableHost}, ""
+		return target{server: r.server, host: r.unresolvableHost, authToken: r.authToken}, ""
 	case "refusing_admission":
 		if r.refusingServer == "" {
 			return target{}, "harness cannot arrange \"refusing_admission\": pass -refusing-server"
 		}
+		// No token: CI arranges this server as an instance whose token the harness never sends.
 		return target{server: r.refusingServer}, ""
 	}
 	return target{}, fmt.Sprintf("harness cannot arrange %q", c.Requires)
@@ -407,6 +423,7 @@ func (r *runner) runHTTP(ctx context.Context, c kase, exp expectation, t target)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Neon-Connection-String", r.connString)
+	t.authorize(req.Header)
 	applyHeaders(req, c.Request.Headers)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -454,9 +471,11 @@ func (r *runner) runWebSocket(ctx context.Context, c kase, exp expectation) (out
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	header := http.Header{"Neon-Connection-String": []string{r.connString}}
+	t.authorize(header)
 	conn, resp, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{
 		Subprotocols: []string{"pg"},
-		HTTPHeader:   http.Header{"Neon-Connection-String": []string{r.connString}},
+		HTTPHeader:   header,
 		Host:         t.host,
 	})
 	if exp.WebSocket != nil && !exp.WebSocket.Upgraded {
