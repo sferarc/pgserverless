@@ -19,7 +19,7 @@ Writing it down is what makes a second implementation possible, and a conformanc
 
 ## Status and versions
 
-SPEC.md is version 0.10.0, a draft. The spec is versioned on its own, independently of the Go module in this repository: SPEC.md's "Versioning" section says what a major, minor or patch change means, and the corpus names the spec version it checks in `spec_version`. The corpus has its own integer `version`, which moves only when an existing case's expectation changes.
+SPEC.md is version 0.10.1, a draft. The spec is versioned on its own, independently of the Go module in this repository: SPEC.md's "Versioning" section says what a major, minor or patch change means, and the corpus names the spec version it checks in `spec_version`. The corpus has its own integer `version`, which moves only when an existing case's expectation changes.
 
 The reference implementation, the Go package at the root of this repository, passes every case at levels 1 to 4 against PostgreSQL 17. What the corpus does not yet cover is listed in CONFORMANCE.md section 7.
 

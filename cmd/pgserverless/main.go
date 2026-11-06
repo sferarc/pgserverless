@@ -2,8 +2,8 @@
 // PostgreSQL database over HTTP (POST /sql) and WebSocket (GET /v2).
 //
 // Configuration is environment variables. DATABASE_URL names the database
-// to serve (only its host, port, sslmode and sslrootcert; clients bring their own
-// credentials), and PGSERVERLESS_ADDR the listen address (default 127.0.0.1:4000).
+// to serve (only its host, port, sslmode, sslrootcert, sslcert and sslkey; clients
+// bring their own credentials), and PGSERVERLESS_ADDR the listen address (default 127.0.0.1:4000).
 // PGSERVERLESS_AUTH_TOKEN, when set, must arrive as Authorization: Bearer on
 // POST /sql and GET /v2. A listener beyond loopback needs that token or
 // PGSERVERLESS_ALLOW_REMOTE=true, which says the network already restricts
@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -78,6 +79,9 @@ func run() error {
 
 	tls := tlsFor(dbURL)
 	if tls.roots, err = loadRootCAs(tls.rootCert); err != nil {
+		return err
+	}
+	if tls.cert, err = loadClientCert(tls.certFile, tls.keyFile); err != nil {
 		return err
 	}
 	origins := splitOrigins(os.Getenv("PGSERVERLESS_CORS_ORIGINS"))
@@ -290,6 +294,7 @@ func upstream(db *pgserverless.ConnInfo, tls upstreamTLS) pgserverless.Upstream 
 		InsecureSkipVerify: tls.skipVerify,
 		VerifyCAOnly:       tls.caOnly,
 		RootCAs:            tls.roots,
+		ClientCert:         tls.cert,
 	}
 }
 
@@ -301,6 +306,9 @@ type upstreamTLS struct {
 	// rootCert is sslrootcert as written; run loads it into roots.
 	rootCert string
 	roots    *x509.CertPool
+	// certFile and keyFile are sslcert and sslkey as written; run loads them into cert.
+	certFile, keyFile string
+	cert              *tls.Certificate
 }
 
 // tlsFor reads DATABASE_URL's sslmode as libpq does: allow (read as prefer) and prefer fall back to the clear,
@@ -315,17 +323,34 @@ func tlsFor(dbURL string) upstreamTLS {
 	unverified := rootCert == ""
 	// The name check is skipped only against a root file: without one, any publicly issued certificate would pass.
 	caOnly := rootCert != "" && rootCert != "system"
+	certFile, keyFile := q.Get("sslcert"), q.Get("sslkey")
 	switch q.Get("sslmode") {
 	case "disable":
 		return upstreamTLS{mode: pgserverless.TLSDisable}
 	case "allow", "prefer":
-		return upstreamTLS{mode: pgserverless.TLSPrefer, skipVerify: unverified, caOnly: caOnly, rootCert: rootCert}
+		return upstreamTLS{mode: pgserverless.TLSPrefer, skipVerify: unverified, caOnly: caOnly, rootCert: rootCert, certFile: certFile, keyFile: keyFile}
 	case "require":
-		return upstreamTLS{mode: pgserverless.TLSRequire, skipVerify: unverified, caOnly: caOnly, rootCert: rootCert}
+		return upstreamTLS{mode: pgserverless.TLSRequire, skipVerify: unverified, caOnly: caOnly, rootCert: rootCert, certFile: certFile, keyFile: keyFile}
 	case "verify-ca":
-		return upstreamTLS{mode: pgserverless.TLSRequire, caOnly: caOnly, rootCert: rootCert}
+		return upstreamTLS{mode: pgserverless.TLSRequire, caOnly: caOnly, rootCert: rootCert, certFile: certFile, keyFile: keyFile}
 	}
-	return upstreamTLS{mode: pgserverless.TLSRequire, rootCert: rootCert}
+	return upstreamTLS{mode: pgserverless.TLSRequire, rootCert: rootCert, certFile: certFile, keyFile: keyFile}
+}
+
+// loadClientCert reads sslcert and sslkey as PEM files, the client certificate libpq offers a database that asks for one.
+// Where libpq goes on without a missing file, the server stops, so a database that needs the certificate is not met without it.
+func loadClientCert(certFile, keyFile string) (*tls.Certificate, error) {
+	switch {
+	case certFile == "" && keyFile == "":
+		return nil, nil
+	case certFile == "" || keyFile == "":
+		return nil, errors.New("DATABASE_URL sslcert and sslkey must be set together")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("DATABASE_URL sslcert and sslkey: %w", err)
+	}
+	return &cert, nil
 }
 
 // loadRootCAs reads sslrootcert as libpq does: a file of PEM certificates to trust, or "system" for the system roots.

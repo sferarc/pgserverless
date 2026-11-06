@@ -68,6 +68,9 @@ type Upstream struct {
 	// VerifyCAOnly, with RootCAs set, checks that one of them issued the upstream certificate but not that it names the host, as libpq's sslmode=verify-ca does.
 	// Without RootCAs the host name is still checked, since any publicly issued certificate would otherwise pass.
 	VerifyCAOnly bool
+	// ClientCert is offered to the upstream when it asks for a client certificate, as libpq's sslcert and sslkey are.
+	// A pointer, not a slice, keeps Upstream comparable.
+	ClientCert *tls.Certificate
 	// TLSMode says whether to negotiate TLS with the upstream, using
 	// PostgreSQL's own vocabulary. Empty means "require", which keeps the
 	// behaviour every existing caller had.
@@ -164,10 +167,10 @@ func WithStatementCounter(fn func(sql string) (int, error)) Option {
 	return func(h *Handler) { h.countStatements = fn }
 }
 
-// WithMaxResponseBytes fails a POST /sql response with 507 once the rows
-// PostgreSQL sent for it, framing included, pass n bytes, as Neon does, so one
-// cross join cannot exhaust the server's memory. Zero, the default, leaves
-// responses uncapped. Upstream.MaxResponseBytes overrides it per request.
+// WithMaxResponseBytes fails a POST /sql response with 507 when a row arrives
+// after its JSON has passed n bytes, as Neon does, so one cross join cannot
+// exhaust the server's memory. Zero, the default, leaves responses uncapped.
+// Upstream.MaxResponseBytes overrides it per request.
 func WithMaxResponseBytes(n int64) Option {
 	return func(h *Handler) { h.maxResponseBytes = n }
 }
@@ -290,6 +293,9 @@ func upstreamTLSConfig(up Upstream, host string) *tls.Config {
 		sni = host
 	}
 	cfg := &tls.Config{ServerName: sni, RootCAs: up.RootCAs, InsecureSkipVerify: up.InsecureSkipVerify} //nolint:gosec // InsecureSkipVerify is the caller's explicit choice, see Upstream.
+	if up.ClientCert != nil {
+		cfg.Certificates = []tls.Certificate{*up.ClientCert}
+	}
 	if up.VerifyCAOnly && up.RootCAs != nil && !up.InsecureSkipVerify {
 		// crypto/tls checks the chain and the name together, so the chain alone is checked in VerifyConnection.
 		cfg.InsecureSkipVerify = true
@@ -394,7 +400,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 	if up.MaxResponseBytes != 0 {
 		maxResponse = up.MaxResponseBytes
 	}
-	budget := &responseBudget{max: maxResponse}
+	budget := &responseBudget{max: maxResponse, batch: req.Queries != nil}
 	switch {
 	case req.Queries != nil && simple:
 		executeBatchSimple(w, conn, queryCtx, req.Queries, count, arrayMode, txnOpts, budget)

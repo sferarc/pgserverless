@@ -180,6 +180,48 @@ func (f *PG) SetDateStyle(style string) {
 	f.dateStyle = style
 }
 
+// RequireClientCert makes every later TLS handshake demand a client certificate issued by caPEM.
+// The handshake is held to TLS 1.2 so a client without one fails in the handshake, not on its first read.
+func (f *PG) RequireClientCert(caPEM []byte) {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		f.t.Fatalf("pgfake: no PEM certificate in caPEM")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cfg := f.tlsCfg.Clone()
+	cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	cfg.ClientCAs = pool
+	cfg.MaxVersion = tls.VersionTLS12
+	f.tlsCfg = cfg
+}
+
+// ClientCertificate makes a self-signed client certificate and its key, both PEM, for RequireClientCert and the client.
+func ClientCertificate(t testing.TB) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("pgfake: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "pgfake-client"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("pgfake: %v", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	return certPEM, keyPEM
+}
+
 // addr returns the host:port the fake backend listens on.
 func (f *PG) Addr() string { return f.ln.Addr().String() }
 
@@ -835,7 +877,10 @@ func (f *PG) negotiateSSL(conn net.Conn) (net.Conn, error) {
 	if _, err := conn.Write([]byte{'S'}); err != nil {
 		return nil, err
 	}
-	tlsConn := tls.Server(conn, f.tlsCfg)
+	f.mu.Lock()
+	cfg := f.tlsCfg
+	f.mu.Unlock()
+	tlsConn := tls.Server(conn, cfg)
 	if err := tlsConn.Handshake(); err != nil {
 		return nil, err
 	}

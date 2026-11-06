@@ -2,6 +2,7 @@ package pgserverless
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -77,7 +78,9 @@ func executeBatchPipeline(w http.ResponseWriter, conn *pgx.Conn, ctx context.Con
 	results := make([]QueryResult, 0, len(queries))
 	for i := range queries {
 		if emptyItem(queries[i]) {
-			results = append(results, emptyResult(batchArrayMode(queries[i], arrayMode)))
+			empty := emptyResult(batchArrayMode(queries[i], arrayMode))
+			budget.chargeResult(&empty)
+			results = append(results, empty)
 			continue
 		}
 		rows, err := br.Query()
@@ -167,7 +170,9 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 	results := make([]QueryResult, 0, len(queries))
 	for i := range queries {
 		if emptyItem(queries[i]) {
-			results = append(results, emptyResult(batchArrayMode(queries[i], arrayMode)))
+			empty := emptyResult(batchArrayMode(queries[i], arrayMode))
+			budget.chargeResult(&empty)
+			results = append(results, empty)
 			continue
 		}
 		rows, err := br.Query()
@@ -248,34 +253,95 @@ func executeBatchInOrder(w http.ResponseWriter, conn *pgx.Conn, ctx context.Cont
 	writeJSON(w, http.StatusOK, BatchResponse{Results: results})
 }
 
-// responseBudget counts the row bytes one response has read against its cap;
-// a batch shares one budget across its statements, as Neon's buffer does.
+// responseBudget counts the response JSON one request has built against its
+// cap, as Neon's proxy measures its output buffer; a batch shares one budget
+// across its statements, since that buffer holds every result.
 type responseBudget struct {
 	max, used int64
+	// batch puts the results inside {"results":[...]}, as a batch response does.
+	batch   bool
+	results int
+	rows    int
+	size    jsonSize
 }
 
 func (b *responseBudget) capped() bool {
 	return b != nil && b.max > 0
 }
 
-// dataRowFraming is a DataRow's bytes before its values: type, length and
-// column count. Each value adds a 4 byte length word on top.
-const dataRowFraming = 1 + 4 + 2
+// startResult charges what Neon writes before a result's first row: the
+// batch envelope or the comma after the previous result, the fields, and the
+// opening of rows.
+func (b *responseBudget) startResult(fields []FieldDefinition) {
+	if !b.capped() {
+		return
+	}
+	switch {
+	case b.results > 0:
+		b.used++
+	case b.batch:
+		b.used += int64(len(`{"results":[`))
+	}
+	b.results++
+	b.rows = 0
+	b.used += int64(len(`{"fields":`)) + b.size.of(fields) + int64(len(`,"rows":[`))
+}
 
-// add charges one row as PostgreSQL framed it and fails once the response
-// passes the cap; counting values alone let NULL or zero-column rows through.
-func (b *responseBudget) add(row [][]byte) error {
+// addRow charges one row as JSON. Like Neon it fails when a row arrives while
+// the response already passes the cap, so the row that crosses it still fits.
+func (b *responseBudget) addRow(row any) error {
 	if !b.capped() {
 		return nil
-	}
-	b.used += dataRowFraming
-	for _, v := range row {
-		b.used += 4 + int64(len(v))
 	}
 	if b.used > b.max {
 		return fmt.Errorf("%w (max is %d bytes)", ErrResponseTooLarge, b.max)
 	}
+	if b.rows > 0 {
+		b.used++
+	}
+	b.rows++
+	b.used += b.size.of(row)
 	return nil
+}
+
+// endResult charges the keys Neon writes after a result's rows.
+func (b *responseBudget) endResult(r *QueryResult) {
+	if !b.capped() {
+		return
+	}
+	b.used += int64(len(`],"command":,"rowCount":,"rowAsArray":}`)) +
+		b.size.of(r.Command) + b.size.of(r.RowCount) + b.size.of(r.RowAsArray)
+}
+
+// chargeResult charges a result built without reading rows, such as an empty batch item.
+func (b *responseBudget) chargeResult(r *QueryResult) {
+	b.startResult(r.Fields)
+	b.endResult(r)
+}
+
+// jsonSize measures a value's JSON without keeping it. It does not escape HTML,
+// as Neon's writer does not, so the count follows Neon's buffer.
+type jsonSize struct {
+	n   int64
+	enc *json.Encoder
+}
+
+func (s *jsonSize) Write(p []byte) (int, error) {
+	s.n += int64(len(p))
+	return len(p), nil
+}
+
+func (s *jsonSize) of(v any) int64 {
+	if s.enc == nil {
+		s.enc = json.NewEncoder(s)
+		s.enc.SetEscapeHTML(false)
+	}
+	s.n = 0
+	if err := s.enc.Encode(v); err != nil {
+		return 0
+	}
+	// Encode ends every value with a newline the response does not carry there.
+	return s.n - 1
 }
 
 // stopOversized closes conn once a result passes the response cap, so rows.Close stops reading it instead of draining the rest.
@@ -343,21 +409,22 @@ func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget 
 		useSessionDateStyle(m, rows.Conn())
 	}
 
+	budget.startResult(fields)
 	var resultRows []any
 	for rows.Next() {
-		if err := budget.add(rows.RawValues()); err != nil {
-			return nil, err
-		}
 		values, err := rowValues(rows, descs, m, rawText)
 		if err != nil {
 			return nil, err
 		}
 
-		if arrayMode {
-			resultRows = append(resultRows, values)
-		} else {
-			resultRows = append(resultRows, ObjectRow{Names: names, Values: values})
+		var row any = values
+		if !arrayMode {
+			row = ObjectRow{Names: names, Values: values}
 		}
+		if err := budget.addRow(row); err != nil {
+			return nil, err
+		}
+		resultRows = append(resultRows, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -369,13 +436,15 @@ func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget 
 
 	cmd, rowCount := parseCommandTag(rows.CommandTag().String())
 
-	return &QueryResult{
+	result := &QueryResult{
 		Fields:     fields,
 		Command:    cmd,
 		RowCount:   rowCount,
 		Rows:       resultRows,
 		RowAsArray: arrayMode,
-	}, nil
+	}
+	budget.endResult(result)
+	return result, nil
 }
 
 // rowValues extracts the current row's column values. In raw-text mode it reads

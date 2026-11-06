@@ -55,6 +55,10 @@ func TestObjectRowMarshalJSON(t *testing.T) {
 	assert.JSONEq(t, `{"z":[1,"two"],"a<b":{"k":1}}`, string(got))
 	assert.Less(t, strings.Index(string(got), `"z"`), strings.Index(string(got), `"a`))
 
+	got, err = ObjectRow{Names: []string{"a<b"}, Values: []any{"x&y>z"}}.MarshalJSON()
+	require.NoError(t, err)
+	assert.Equal(t, `{"a<b":"x&y>z"}`, string(got))
+
 	got, err = json.Marshal(ObjectRow{})
 	require.NoError(t, err)
 	assert.Equal(t, `{}`, string(got))

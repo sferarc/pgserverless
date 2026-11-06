@@ -14,29 +14,35 @@ type ObjectRow struct {
 	Values []any
 }
 
-// MarshalJSON writes the row as a JSON object in column order.
+// MarshalJSON writes the row as a JSON object in column order, without HTML escaping as Neon's writer has none, so the response cap counts what Neon counts.
 func (r ObjectRow) MarshalJSON() ([]byte, error) {
 	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	put := func(v any) error {
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+		// Encode ends every value with a newline the object does not carry there.
+		b.Truncate(b.Len() - 1)
+		return nil
+	}
 	b.WriteByte('{')
 	for i, name := range r.Names {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		key, err := json.Marshal(name)
-		if err != nil {
+		if err := put(name); err != nil {
 			return nil, err
 		}
-		b.Write(key)
 		b.WriteByte(':')
 		var v any
 		if i < len(r.Values) {
 			v = r.Values[i]
 		}
-		val, err := json.Marshal(v)
-		if err != nil {
+		if err := put(v); err != nil {
 			return nil, err
 		}
-		b.Write(val)
 	}
 	b.WriteByte('}')
 	return b.Bytes(), nil

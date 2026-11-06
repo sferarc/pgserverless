@@ -67,7 +67,7 @@ With `PGSERVERLESS_AUTH_TOKEN` set, every request needs `Authorization: Bearer <
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DATABASE_URL` | none, required | The database to serve. Only its host, port, `sslmode` and `sslrootcert` are used. |
+| `DATABASE_URL` | none, required | The database to serve. Only its host, port, `sslmode`, `sslrootcert`, `sslcert` and `sslkey` are used. |
 | `PGSERVERLESS_ADDR` | `127.0.0.1:4000` (`:4000` in the image) | Listen address. |
 | `PGSERVERLESS_AUTH_TOKEN` | none | When set, `POST /sql` and `GET /v2` require `Authorization: Bearer <token>`, compared in constant time. |
 | `PGSERVERLESS_ALLOW_REMOTE` | `false` | `true` lets the server listen beyond loopback with no token. `PGSERVERLESS_ALLOW_UNAUTHENTICATED=true` is read the same way. |
@@ -84,6 +84,8 @@ TLS to the database follows `DATABASE_URL`'s `sslmode` as libpq reads it:
 - No `sslmode` requires TLS and checks the certificate and host name.
 
 A self-signed database certificate on a trusted network is `sslmode=require`; to check it, set `sslrootcert` to its CA file.
+
+For a database that requires a client certificate, set `sslcert` and `sslkey` to PEM files, as for `psql`. The server stops at start when only one is set or the pair cannot be loaded. The certificate is offered on every connection, from every client, so it vouches for this server rather than for a user: keep a password method in `pg_hba.conf` (for example `scram-sha-256` with `clientcert=verify-full`), because with the `cert` method the certificate alone would let any request in as the user it names.
 
 `GET /health` answers `{"status":"ok"}` without touching the database.
 

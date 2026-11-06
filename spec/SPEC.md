@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.10.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.10.1, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -425,7 +425,7 @@ These could not be settled from either source and MUST NOT be guessed by an impl
 1. **Duplicate column names in object mode.** Settled in 0.4.0: one member per column, a repeated name included, as Neon's proxy writes it. Section 5.1 states the requirement.
 2. **`timestamp` and `timestamptz` in native mode.** Settled in 0.3.0: PostgreSQL's text, as Neon's proxy returns it. Section 6.4 states the requirement. The reference implementation emitted RFC 3339 (`"2024-01-01T10:00:00Z"`) before then.
 3. **Whether an implementation may omit raw text mode.** This document requires it at level 1 because the client requires it. If a server exists whose only consumers are native-mode, the level structure may be wrong.
-4. **Maximum request and response sizes.** Sections 4.3 and 7.2 let a server refuse an oversized batch, request body or response, and give the status for each, but no limit is specified and no size every server must accept. The reference implementation refuses a batch over 100 statements and a request body over 10 MiB, and its server refuses a response whose row values pass 10 MiB. Whether conformance should set a floor a client can rely on is undecided.
+4. **Maximum request and response sizes.** Sections 4.3 and 7.2 let a server refuse an oversized batch, request body or response, and give the status for each, but no limit is specified and no size every server must accept. The reference implementation refuses a batch over 100 statements and a request body over 10 MiB, and its server refuses a response once its JSON passes 10 MiB, as Neon's proxy does. Whether conformance should set a floor a client can rely on is undecided.
 5. **`format` in the field descriptor.** Settled in 0.4.0: always `"text"`, as Neon's proxy writes it. Section 5.2 states the requirement.
 6. **Text spellings that differ by decoder.** PostgreSQL prints a `time` with whole seconds without fractional digits, an `interval` of whole days without a time part, and doubles a single quote inside a `tsvector` lexeme. The reference implementation spells all three as PostgreSQL does, but a server whose decoder prints `10:00:00.000000`, `1 day 00:00:00` or a backslash escaped quote sends values that parse back to the same thing. Whether conformance should require PostgreSQL's exact spelling is undecided, and the corpus marks these as tolerant comparisons.
 

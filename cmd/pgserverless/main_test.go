@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"io"
@@ -848,4 +849,66 @@ func TestIdleTimeoutLeavesAQuietTunnelOpen(t *testing.T) {
 		t.Fatalf("query after idling: %v", err)
 	}
 	readyForQuery("query after idling past the idle timeout")
+}
+
+func TestLoadClientCertReadsSSLCertAndSSLKey(t *testing.T) {
+	dir := t.TempDir()
+	certPEM, keyPEM := pgfake.ClientCertificate(t)
+	certFile, keyFile := filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tls := tlsFor("postgres://u:p@db/app?sslmode=require&sslcert=" + certFile + "&sslkey=" + keyFile)
+	cert, err := loadClientCert(tls.certFile, tls.keyFile)
+	if err != nil || cert == nil {
+		t.Fatalf("a PEM pair: got %v, %v, want the certificate", cert, err)
+	}
+	if cert, err := loadClientCert("", ""); cert != nil || err != nil {
+		t.Errorf("neither set: got %v, %v, want no certificate", cert, err)
+	}
+	for name, pair := range map[string][2]string{
+		"sslcert alone":    {certFile, ""},
+		"sslkey alone":     {"", keyFile},
+		"missing key file": {certFile, filepath.Join(dir, "missing.key")},
+		"key is not a key": {certFile, certFile},
+	} {
+		if _, err := loadClientCert(pair[0], pair[1]); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	if got := tlsFor("postgres://u:p@db/app?sslmode=disable&sslcert=" + certFile + "&sslkey=" + keyFile); got.certFile != "" || got.keyFile != "" {
+		t.Errorf("sslmode=disable: read %q and %q, want neither", got.certFile, got.keyFile)
+	}
+}
+
+func TestAdmissionsCarryTheClientCert(t *testing.T) {
+	db, err := pgserverless.ParseConnectionString("postgres://owner:secret@db.example.test:5433/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &tls.Certificate{}
+	up := upstreamTLS{mode: pgserverless.TLSRequire, cert: cert}
+	req := httptest.NewRequest(http.MethodPost, "/sql", nil)
+	req.Header.Set("Connection-String", "postgres://reader:pw@db.example.test/app")
+	for name, admit := range map[string]pgserverless.HTTPAdmission{"http": httpAdmission(db, up), "websocket": wsAdmission(db, up)} {
+		got, err := admit(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ClientCert != cert {
+			t.Errorf("%s: ClientCert not passed to the upstream", name)
+		}
+	}
+}
+
+func TestRunRefusesSSLCertWithoutSSLKey(t *testing.T) {
+	t.Setenv("PGSERVERLESS_ADDR", "127.0.0.1:0")
+	t.Setenv("DATABASE_URL", "postgres://u:p@db/app?sslmode=require&sslcert="+filepath.Join(t.TempDir(), "client.crt"))
+	if err := run(); err == nil || !strings.Contains(err.Error(), "sslkey") {
+		t.Errorf("run() = %v, want an sslcert and sslkey error", err)
+	}
 }
