@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.5
+
+### Patch Changes
+
+- 7756b96: Native mode spells a `timestamptz` in the session's `TimeZone`, as PostgreSQL and Neon's proxy do, instead of always with `+00`. A database or session set to `Asia/Kolkata` now answers `2024-01-01 15:30:00+05:30` for the column, its array elements, `tstzrange` bounds and record fields, matching raw-text mode. A zone Go cannot load keeps the UTC spelling. The package embeds the time zone database, so a binary serving it from an image with no zoneinfo, such as `cmd/pgserverless` or the hosted proxy on Alpine, still loads named zones.
+- 0e6c481: SPEC.md 0.9.0 requires body members to be matched by exact name, as Neon's proxy matches them: a differently cased member such as `QUERY` is ignored, a repeated member of the single statement shape is refused with 400 unless `queries` makes the body a batch, and a repeated `queries` or batch item member is refused with 400. The corpus gains `core/differently-cased-member-is-ignored`, `core/repeated-query-is-refused` and `batch/repeated-query-beside-queries-runs-the-batch`, and `pgsconform` sends a case's string `body` as raw text, as the schema already described, so a case can repeat a member.
+
 ## 0.9.4
 
 ### Patch Changes
