@@ -1,12 +1,5 @@
 # Changelog
 
-## 0.10.1
-
-### Patch Changes
-
-- b9f639e: Native mode spells an `interval` in the session's `IntervalStyle`, as PostgreSQL and Neon's proxy do, instead of always in the `postgres` style. A database, role or earlier batch item set to `iso_8601` now answers `P1DT2H` for the column, its array elements and record fields, matching raw-text mode; `sql_standard` and `postgres_verbose` follow `interval_out` the same way.
-- 461533d: SPEC.md 0.10.0 requires a query holding more than one statement to be refused with 400 and SQLSTATE `42601` with none of it run, as Neon's proxy refuses it, and a batch item holding more than one to fail the batch. The corpus gains `core/two-statements-in-one-query-are-refused`, `core/trailing-semicolon-is-one-statement` and `batch/two-statements-in-one-item-fail-the-batch`.
-
 ## 0.10.0
 
 ### Minor Changes
