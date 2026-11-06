@@ -184,6 +184,12 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 			return elems
 		}
 	}
+	// bytea[] has a codec, but useTextBytea has it arrive as text.
+	if typeOID == oidByteaArray {
+		if elems, ok := textArrayElems(v, oidBytea); ok {
+			return elems
+		}
+	}
 	switch typeOID {
 	case oidInt8:
 		if n, ok := v.(int64); ok {
@@ -233,8 +239,15 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 		if s, ok := pgTextValue(m, v, typeOID); ok {
 			return s
 		}
+	case oidDate:
+		if s, ok := styledDateTimeText(m, typeOID, v); ok {
+			return s
+		}
+		if s, ok := pgTextValue(m, v, typeOID); ok {
+			return s
+		}
 	case oidTID, oidXID8,
-		oidBytea, oidXML, oidDate,
+		oidBytea, oidXML,
 		oidMacaddr, oidMacaddr8, oidBit, oidVarbit:
 		if s, ok := pgTextValue(m, v, typeOID); ok {
 			return s
@@ -498,6 +511,9 @@ func rangeLiteral(m *pgtype.Map, r pgtype.Range[any], elemOID uint32) (string, b
 func rangeBoundText(m *pgtype.Map, bound any, boundType pgtype.BoundType, elemOID uint32) (string, bool) {
 	if boundType == pgtype.Unbounded || bound == nil {
 		return "", true
+	}
+	if s, ok := styledDateTimeText(m, elemOID, bound); ok {
+		return quoteRangeBound(s), true
 	}
 	if t, isTime := bound.(time.Time); isTime && elemOID == pgtype.TimestamptzOID {
 		s, ok := timestamptzText(m, t)

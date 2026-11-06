@@ -73,6 +73,8 @@ type PG struct {
 	timeZone string
 	// intervalStyle is the IntervalStyle a session reports at startup; empty reports none.
 	intervalStyle string
+	// dateStyle is the DateStyle a session reports at startup; empty reports none.
+	dateStyle string
 }
 
 // Result is the canned response for one query.
@@ -169,6 +171,13 @@ func (f *PG) SetIntervalStyle(style string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.intervalStyle = style
+}
+
+// SetDateStyle makes every new session report style as its DateStyle, as PostgreSQL does at startup.
+func (f *PG) SetDateStyle(style string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dateStyle = style
 }
 
 // addr returns the host:port the fake backend listens on.
@@ -406,13 +415,16 @@ func (f *PG) handle(conn net.Conn) {
 	// this.
 	be.Send(&pgproto3.ParameterStatus{Name: "standard_conforming_strings", Value: "on"})
 	f.mu.Lock()
-	timeZone, intervalStyle := f.timeZone, f.intervalStyle
+	timeZone, intervalStyle, dateStyle := f.timeZone, f.intervalStyle, f.dateStyle
 	f.mu.Unlock()
 	if timeZone != "" {
 		be.Send(&pgproto3.ParameterStatus{Name: "TimeZone", Value: timeZone})
 	}
 	if intervalStyle != "" {
 		be.Send(&pgproto3.ParameterStatus{Name: "IntervalStyle", Value: intervalStyle})
+	}
+	if dateStyle != "" {
+		be.Send(&pgproto3.ParameterStatus{Name: "DateStyle", Value: dateStyle})
 	}
 	pid, cancelled := f.register()
 	defer f.unregister(pid)

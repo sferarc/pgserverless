@@ -129,6 +129,9 @@ func timestampFieldText(m *pgtype.Map, oid uint32, v any) (string, bool) {
 	if s, ok := infinityText(v); ok {
 		return s, true
 	}
+	if s, ok := styledDateTimeText(m, oid, v); ok {
+		return s, true
+	}
 	if t, isTime := v.(time.Time); isTime && oid == oidTimestamptz {
 		return timestamptzText(m, t)
 	}

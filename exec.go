@@ -19,6 +19,9 @@ func queryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 	if err := checkEmptyQueryParams(query, len(params)); err != nil {
 		return nil, err
 	}
+	if !rawText {
+		useTextBytea(conn.TypeMap())
+	}
 	rows, err := conn.Query(ctx, query, params...)
 	if err != nil {
 		return nil, err
@@ -203,6 +206,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 // item using a table an earlier item creates failed with 42P01. Any failure
 // returns with the transaction open, and closing the connection rolls it back.
 func executeBatchInOrder(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode bool, opts txnOptions, budget *responseBudget) {
+	useTextBytea(conn.TypeMap())
 	if _, err := conn.Exec(ctx, opts.beginSQL()); err != nil {
 		writeQueryError(ctx, w, err)
 		return
@@ -303,8 +307,9 @@ func batchArrayMode(q QueryItem, arrayMode bool) bool {
 // pgx-decoded and coerced to the Neon driver's native-type contract. m is the
 // connection's type map, which the coercion uses to render back to PostgreSQL
 // text the types whose Go decode does not marshal to it. In native mode m's
-// timestamptz types are re-registered to scan into the session's TimeZone, and
-// its interval types to carry the session's IntervalStyle.
+// timestamptz types are re-registered to scan into the session's TimeZone, its
+// interval types to carry the session's IntervalStyle, and its date type to
+// carry the session's DateStyle.
 func RowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool) (*QueryResult, error) {
 	return rowsToResult(rows, m, arrayMode, rawText, nil)
 }
@@ -329,6 +334,7 @@ func rowsToResult(rows pgx.Rows, m *pgtype.Map, arrayMode, rawText bool, budget 
 	if !rawText {
 		useSessionTimeZone(m, rows.Conn())
 		useSessionIntervalStyle(m, rows.Conn())
+		useSessionDateStyle(m, rows.Conn())
 	}
 
 	var resultRows []any
