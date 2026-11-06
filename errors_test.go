@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"syscall"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -188,6 +190,8 @@ func TestClassifyError(t *testing.T) {
 		{errors.New("timeout occurred"), 400, 400, "08P01"},
 		{errors.New("password authentication failed"), 400, 400, ""},
 		{ErrResponseTooLarge, 507, 507, ""},
+		{fmt.Errorf("failed to receive message: %w", io.ErrUnexpectedEOF), 400, 500, ""},
+		{fmt.Errorf("write failed: %w", syscall.EPIPE), 400, 500, ""},
 		{errors.New("something unknown"), 500, 500, ""},
 	}
 	for _, tt := range tests {

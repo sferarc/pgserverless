@@ -103,6 +103,8 @@ type Result struct {
 	// CopyIn answers CopyInResponse and holds like COPY FROM STDIN waiting for data; CopyOut streams Rows as COPY TO STDOUT does.
 	CopyIn  bool
 	CopyOut bool
+	// Disconnect sends Rows, then closes the connection without an error or a CommandComplete, like a backend that crashed mid-statement.
+	Disconnect bool
 }
 
 // Col describes one result column.
@@ -377,6 +379,8 @@ type session struct {
 	cancelled chan struct{} // closed by a CancelRequest for this session
 
 	latin1 bool // the session's client_encoding is LATIN1, so row text is converted to it
+
+	conn net.Conn // closed by a Disconnect result
 }
 
 // isControlSQL reports whether sql is a transaction-control statement the fake
@@ -476,7 +480,7 @@ func (f *PG) handle(conn net.Conn) {
 		return
 	}
 
-	s := &session{statements: map[string]string{}, cancelled: cancelled, ran: map[string]bool{}, latin1: strings.EqualFold(clientEncoding, "LATIN1")}
+	s := &session{statements: map[string]string{}, cancelled: cancelled, ran: map[string]bool{}, conn: conn, latin1: strings.EqualFold(clientEncoding, "LATIN1")}
 
 	for {
 		msg, err := be.Receive()
@@ -739,6 +743,11 @@ func (f *PG) writeResult(be *pgproto3.Backend, s *session, sql string, sendRowDe
 	}
 	if res.HoldAfterRows {
 		holdUntilCancelled(be, s)
+		return
+	}
+	if res.Disconnect {
+		_ = be.Flush()
+		_ = s.conn.Close()
 		return
 	}
 	Tag := res.Tag

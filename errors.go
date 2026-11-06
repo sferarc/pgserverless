@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/labstack/echo/v4"
@@ -187,7 +190,8 @@ func classifyError(err error, dialing bool) (int, string, string) {
 		return http.StatusBadRequest, "authentication failed", ""
 	case strings.Contains(msg, "connection refused"),
 		strings.Contains(msg, "no such host"),
-		strings.Contains(msg, "connection reset"):
+		strings.Contains(msg, "connection reset"),
+		upstreamClosed(err):
 		if dialing {
 			return http.StatusInternalServerError, "upstream connection failed", ""
 		}
@@ -195,6 +199,16 @@ func classifyError(err error, dialing bool) (int, string, string) {
 	default:
 		return http.StatusInternalServerError, "internal server error", ""
 	}
+}
+
+// upstreamClosed reports a connection the database closed without an ErrorResponse, as a crashed or killed backend does.
+func upstreamClosed(err error) bool {
+	for _, target := range []error{io.EOF, io.ErrUnexpectedEOF, net.ErrClosed, syscall.ECONNRESET, syscall.EPIPE} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // SanitizeError removes credentials from error messages.
