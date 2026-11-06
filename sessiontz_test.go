@@ -97,25 +97,6 @@ func TestConformance_TimestamptzInSessionTimeZone(t *testing.T) {
 	}
 }
 
-// A record field is spelled by record_out in the same session zone.
-func TestConformance_TimestamptzRecordFieldInSessionTimeZone(t *testing.T) {
-	pg := pgfake.New(t)
-	pg.SetTimeZone("Asia/Kolkata")
-	m := pgtype.NewMap()
-	ts, err := m.Encode(oidTimestamptz, pgtype.BinaryFormatCode, time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC), nil)
-	require.NoError(t, err)
-	pg.SetResult("SELECT row(now())", pgfake.Result{
-		Cols: []pgfake.Col{{Name: "row", TypeOID: oidRecord}},
-		Rows: [][]any{{pgfake.RawColumn(binaryRecord(recordField{oidTimestamptz, ts}))}},
-		Tag:  "SELECT 1",
-	})
-	e := newConformanceServer(t, pg)
-
-	rec := doSQL(e, `{"query":"SELECT row(now())"}`, nil)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	assert.JSONEq(t, `"(\"2024-01-01 15:30:00+05:30\")"`, firstColumn(t, rec.Body.Bytes(), "row"))
-}
-
 // Raw-text mode passes PostgreSQL's own text through, so the session zone never reaches it.
 func TestConformance_TimestamptzRawTextIgnoresSessionZone(t *testing.T) {
 	pg := pgfake.New(t)

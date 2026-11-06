@@ -48,8 +48,8 @@ func parseDateStyle(s string) (dateStyle, bool) {
 }
 
 // useSessionDateStyle records the DateStyle PostgreSQL last reported on m's
-// date type, so date, timestamp and timestamptz, alone and inside arrays,
-// ranges and records, are spelled as date_out, timestamp_out and
+// date type, so date, timestamp and timestamptz, alone and inside arrays
+// and ranges, are spelled as date_out, timestamp_out and
 // timestamptz_out do in it. Like useSessionTimeZone it follows a SET in an
 // earlier batch item, and m's date type is replaced only when the style changes.
 func useSessionDateStyle(m *pgtype.Map, conn *pgx.Conn) {

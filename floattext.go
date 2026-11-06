@@ -1,7 +1,9 @@
 package pgserverless
 
 import (
+	"math"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -47,8 +49,7 @@ func (c pgTextFloatArrayCodec) DecodeValue(m *pgtype.Map, oid uint32, format int
 }
 
 // useTextFloat makes m ask for float4, float8 and their arrays as text. It must
-// run before the query is sent, since the result formats go out with it; a float
-// field of a record still arrives in binary with its shortest digits.
+// run before the query is sent, since the result formats go out with it.
 func useTextFloat(m *pgtype.Map) {
 	if m == nil {
 		return
@@ -89,15 +90,24 @@ func nonFiniteFloatElems(elems []any) []any {
 	return elems
 }
 
-// arrayCodecOf sees through the text-result array codecs, whose binary record fields still decode element by element.
-func arrayCodecOf(c pgtype.Codec) (*pgtype.ArrayCodec, bool) {
-	switch a := c.(type) {
-	case *pgtype.ArrayCodec:
-		return a, true
-	case pgTextFloatArrayCodec:
-		return a.ArrayCodec, true
-	case pgTextByteaArrayCodec:
-		return a.ArrayCodec, true
+// pgFloatText spells a float as float8out and float4out do: exponent form past DBL_DIG or FLT_DIG, where pgx always prints digits.
+func pgFloatText(f float64, bitSize int) string {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
 	}
-	return nil, false
+	maxExp := 15
+	if bitSize == 32 {
+		maxExp = 6
+	}
+	e := strconv.FormatFloat(f, 'e', -1, bitSize)
+	exp, err := strconv.Atoi(e[strings.IndexByte(e, 'e')+1:])
+	if err == nil && (exp < -4 || exp >= maxExp) {
+		return e
+	}
+	return strconv.FormatFloat(f, 'f', -1, bitSize)
 }

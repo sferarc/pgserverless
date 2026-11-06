@@ -22,6 +22,7 @@ func queryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 	if !rawText {
 		useTextBytea(conn.TypeMap())
 		useTextFloat(conn.TypeMap())
+		useTextRecord(conn.TypeMap())
 	}
 	rows, err := conn.Query(ctx, query, params...)
 	if err != nil {
@@ -209,6 +210,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 func executeBatchInOrder(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode bool, opts txnOptions, budget *responseBudget) {
 	useTextBytea(conn.TypeMap())
 	useTextFloat(conn.TypeMap())
+	useTextRecord(conn.TypeMap())
 	if _, err := conn.Exec(ctx, opts.beginSQL()); err != nil {
 		writeQueryError(ctx, w, err)
 		return
@@ -401,12 +403,6 @@ func rowValues(rows pgx.Rows, descs []pgconn.FieldDescription, m *pgtype.Map, ra
 	// many dimensions it had (see reshapeArrayValue).
 	raw := rows.RawValues()
 	for i, d := range descs {
-		if i < len(raw) {
-			if v, ok := recordColumnValue(m, raw[i], d.DataTypeOID, d.Format); ok {
-				values[i] = v
-				continue
-			}
-		}
 		values[i] = coerceNeonValue(m, values[i], d.DataTypeOID)
 		if i < len(raw) {
 			values[i] = numericScaleValue(m, values[i], raw[i], d.DataTypeOID, d.Format)

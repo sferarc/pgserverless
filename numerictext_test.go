@@ -109,13 +109,6 @@ func TestNumericScaleValue(t *testing.T) {
 	})
 }
 
-func TestRecordText_NumericZeroKeepsItsScale(t *testing.T) {
-	m := pgtype.NewMap()
-	got, ok := recordText(m, binaryRecord(recordField{oid: oidNumeric, data: pgZeroScale2}, recordField{oid: oidNumeric, data: pgOnePoint50}))
-	assert.True(t, ok)
-	assert.Equal(t, "(0.00,1.50)", got)
-}
-
 // PostgreSQL sends a zero numeric with no digits and only its display scale, so a numeric(10,2) balance of 0.00 came back "0" beside "1.50".
 func TestConformance_NumericZeroKeepsItsScale(t *testing.T) {
 	pg := pgfake.New(t)
@@ -210,13 +203,6 @@ func TestNumericScaleValue_NumrangeArray(t *testing.T) {
 	raw := binaryNumrangeArray([]int{3}, numrangeZeroToOne50, nil, binaryNumrange(rangeFlagLowerInclusive, pgOnePoint50, pgTwoPoint5))
 	got := numericScaleValue(m, []any{"[0,1.50)", nil, "[1.50,2.5)"}, raw, pgtype.NumrangeArrayOID, pgBinaryFormat)
 	assert.Equal(t, []any{"[0.00,1.50)", nil, "[1.50,2.5)"}, got)
-}
-
-func TestRecordText_NumrangeZeroKeepsItsScale(t *testing.T) {
-	m := pgtype.NewMap()
-	got, ok := recordText(m, binaryRecord(recordField{oid: pgtype.NumrangeOID, data: numrangeZeroToOne50}))
-	assert.True(t, ok)
-	assert.Equal(t, `("[0.00,1.50)")`, got)
 }
 
 // pgx decodes a binary numeric zero without its display scale, so numrange(0.00, 1.50) came back "[0,1.50)" where PostgreSQL prints "[0.00,1.50)".

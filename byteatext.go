@@ -41,8 +41,7 @@ func (c pgTextByteaArrayCodec) DecodeValue(m *pgtype.Map, oid uint32, format int
 }
 
 // useTextBytea makes m ask for bytea and bytea[] results as text. It must run
-// before the query is sent, since the result formats go out with it; a bytea
-// field of a record still arrives in binary and is spelled in hex.
+// before the query is sent, since the result formats go out with it.
 func useTextBytea(m *pgtype.Map) {
 	if m == nil {
 		return
