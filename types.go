@@ -39,8 +39,8 @@ const (
 	oidMoneyArray  uint32 = 791
 	oidUUID        uint32 = 2950
 	oidUUIDArray   uint32 = 2951
-	// record is what row(...) returns. pgx decodes it to a []any, like an array,
-	// which is why reshapeArrayValue cannot decide from the decoded value alone.
+	// record is what row(...) returns. pgx decodes a binary one to a []any, like an
+	// array, which is why reshapeArrayValue cannot decide from the decoded value alone.
 	oidRecord uint32 = 2249
 
 	// Types whose pgx-decoded Go value does not JSON-marshal to PostgreSQL's
@@ -190,11 +190,21 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 			return elems
 		}
 	}
+	// record[] likewise arrives as text through useTextRecord, each element a record_out string.
+	if typeOID == oidRecordArray {
+		if elems, ok := textArrayElems(v, oidRecord); ok {
+			return elems
+		}
+	}
 	// float4[] and float8[] likewise arrive as text through useTextFloat.
 	if typeOID == oidFloat4Array || typeOID == oidFloat8Array {
 		if elems, ok := textFloatArrayElems(v); ok {
 			return elems
 		}
+	}
+	// The geometric arrays likewise arrive as text through useTextGeom.
+	if elems, ok := textGeomArrayElems(v, typeOID); ok {
+		return elems
 	}
 	switch typeOID {
 	case oidInt8:
@@ -622,10 +632,9 @@ func rangeArrayElemOID(m *pgtype.Map, arrayOID uint32) (uint32, bool) {
 //
 // inet[] is a fourth reason: only its single-host elements need anything, and a
 // element carrying a real netmask passes through unchanged (see inetHostText).
-// cidr[] is absent because cidr needs nothing. point[] is absent for the same
-// reason, and box[] is present because pgx decodes it from the binary format the
-// JSON path negotiates, where PostgreSQL's semicolon array delimiter never
-// arises.
+// cidr[] is absent because cidr needs nothing. The geometric arrays arrive as
+// text through useTextGeom; they are here for a caller whose type map still
+// decodes them from binary.
 func neonArrayElemOID(arrayOID uint32) (uint32, bool) {
 	switch arrayOID {
 	case oidInt8Array:
@@ -1101,13 +1110,18 @@ func arrayElemOID(arrOID uint32) uint32 {
 // such as {{1,2},{3,4}} becomes nested slices, and a leading dimension
 // decoration ("[0:1]={1,2}") is skipped.
 func parsePgArray(raw []byte, elemTypeOID uint32) ([]any, error) {
+	return parsePgArrayDelim(raw, elemTypeOID, ',')
+}
+
+// parsePgArrayDelim is parsePgArray for an element type whose typdelim is delim, as box's is ';'.
+func parsePgArrayDelim(raw []byte, elemTypeOID uint32, delim byte) ([]any, error) {
 	s := string(raw)
 	if strings.HasPrefix(s, "[") {
 		if i := strings.IndexByte(s, '='); i >= 0 {
 			s = s[i+1:]
 		}
 	}
-	p := pgArrayParser{s: s, elemOID: elemTypeOID}
+	p := pgArrayParser{s: s, elemOID: elemTypeOID, delim: delim}
 	arr, err := p.parseArray()
 	if err != nil {
 		return nil, err
@@ -1122,6 +1136,7 @@ type pgArrayParser struct {
 	s       string
 	pos     int
 	elemOID uint32
+	delim   byte
 }
 
 func (p *pgArrayParser) parseArray() ([]any, error) {
@@ -1155,7 +1170,7 @@ func (p *pgArrayParser) parseArray() ([]any, error) {
 			return nil, fmt.Errorf("invalid array literal: %q", p.s)
 		}
 		switch p.s[p.pos] {
-		case ',':
+		case p.delim:
 			p.pos++
 		case '}':
 			p.pos++
@@ -1184,7 +1199,7 @@ func (p *pgArrayParser) parseElement() (any, error) {
 		case ch == '"':
 			wasQuoted = true
 			inQuote = !inQuote
-		case !inQuote && (ch == ',' || ch == '}'):
+		case !inQuote && (ch == p.delim || ch == '}'):
 			return convertArrayElem(current.String(), p.elemOID, wasQuoted), nil
 		case !inQuote && ch == '{':
 			return nil, fmt.Errorf("invalid array literal: %q", p.s)

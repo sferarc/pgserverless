@@ -2,7 +2,6 @@ package pgserverless
 
 import (
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/netip"
 	"testing"
@@ -45,9 +44,10 @@ func TestConformance_GeometricAndTSVectorAsText(t *testing.T) {
 		},
 		{
 			// float8out switches to exponent form outside 1e-4 to 1e15 and spells
-			// infinity out; pgx printed 100000000000000000000 and +Inf.
+			// infinity out; pgx printed 100000000000000000000 and +Inf. The column
+			// is asked for as text, so the fake sends PostgreSQL's own spelling.
 			"box with exponent and infinite corners", oidBox,
-			pgtype.Box{P: [2]pgtype.Vec2{{X: math.Inf(1), Y: 1e20}, {X: 0, Y: 1e-5}}, Valid: true},
+			pgfake.RawColumn(`(Infinity,1e+20),(0,1e-05)`),
 			`"(Infinity,1e+20),(0,1e-05)"`,
 		},
 		{
@@ -140,15 +140,15 @@ func TestConformance_GeometricAndTSVectorAsText(t *testing.T) {
 
 // point used to be left to pgtype.Point's own MarshalJSON, which prints %g:
 // right for (1,2) but 1.234567e+06 where PostgreSQL prints 1234567, and +Inf
-// where it prints Infinity. Expected strings are read off PostgreSQL 17.11.
+// where it prints Infinity. The fake sends what PostgreSQL 17.11 prints for
+// each value, which comes back unchanged.
 func TestConformance_PointSpelledLikePostgres(t *testing.T) {
-	pt := func(x, y float64) pgtype.Point { return pgtype.Point{P: pgtype.Vec2{X: x, Y: y}, Valid: true} }
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT c, a FROM t", pgfake.Result{
 		Cols: []pgfake.Col{{Name: "c", TypeOID: oidPoint}, {Name: "a", TypeOID: oidPointArray}},
 		Rows: [][]any{
-			{pt(1, 2), []pgtype.Point{pt(1e20, 1), pt(1234567, 2)}},
-			{pt(1234567, 0.00001), []pgtype.Point{pt(math.Inf(1), math.Inf(-1))}},
+			{pgfake.RawColumn(`(1,2)`), pgfake.RawColumn(`{"(1e+20,1)","(1234567,2)"}`)},
+			{pgfake.RawColumn(`(1234567,1e-05)`), pgfake.RawColumn(`{"(Infinity,-Infinity)"}`)},
 		},
 		Tag: "SELECT 2",
 	})
@@ -247,14 +247,10 @@ func TestConformance_GeometricAndInetArrays(t *testing.T) {
 		},
 		{
 			// box[] is the one array PostgreSQL punctuates with semicolons
-			// rather than commas, which pgx's text array parser cannot read.
-			// The JSON path negotiates binary, where the delimiter never
-			// appears, so this column does arrive as a slice.
+			// rather than commas, so splitting on commas would yield four
+			// wrong elements.
 			"box array", oidBoxArray,
-			[]pgtype.Box{
-				{P: [2]pgtype.Vec2{{X: 3, Y: 4}, {X: 1, Y: 2}}, Valid: true},
-				{P: [2]pgtype.Vec2{{X: 7, Y: 8}, {X: 5, Y: 6}}, Valid: true},
-			},
+			pgfake.RawColumn(`{(3,4),(1,2);(7,8),(5,6)}`),
 			`["(3,4),(1,2)","(7,8),(5,6)"]`,
 		},
 		{
