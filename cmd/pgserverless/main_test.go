@@ -4,11 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -910,5 +916,134 @@ func TestRunRefusesSSLCertWithoutSSLKey(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@db/app?sslmode=require&sslcert="+filepath.Join(t.TempDir(), "client.crt"))
 	if err := run(); err == nil || !strings.Contains(err.Error(), "sslkey") {
 		t.Errorf("run() = %v, want an sslcert and sslkey error", err)
+	}
+}
+
+// servingCertFiles writes a self-signed certificate for 127.0.0.1 and its key as PEM files and returns their paths and the certificate.
+func servingCertFiles(t *testing.T) (certFile, keyFile string, certPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "pgserverless-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certFile, keyFile = filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key")
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile, certPEM
+}
+
+func TestLoadServingCert(t *testing.T) {
+	certFile, keyFile, _ := servingCertFiles(t)
+	if cert, err := loadServingCert(certFile, keyFile); err != nil || cert == nil {
+		t.Fatalf("a PEM pair: got %v, %v, want the certificate", cert, err)
+	}
+	if cert, err := loadServingCert("", ""); cert != nil || err != nil {
+		t.Errorf("neither set: got %v, %v, want plain HTTP", cert, err)
+	}
+	if cfg := servingTLSConfig(nil); cfg != nil {
+		t.Errorf("no certificate: TLS config %v, want none", cfg)
+	}
+	for name, pair := range map[string][2]string{
+		"cert alone":       {certFile, ""},
+		"key alone":        {"", keyFile},
+		"missing key file": {certFile, filepath.Join(t.TempDir(), "missing.key")},
+		"key is not a key": {certFile, certFile},
+	} {
+		if _, err := loadServingCert(pair[0], pair[1]); err == nil || !strings.Contains(err.Error(), "PGSERVERLESS_TLS_CERT and PGSERVERLESS_TLS_KEY") {
+			t.Errorf("%s: got %v, want an error naming both variables", name, err)
+		}
+	}
+}
+
+func TestRunRefusesTLSCertWithoutTLSKey(t *testing.T) {
+	certFile, _, _ := servingCertFiles(t)
+	t.Setenv("PGSERVERLESS_ADDR", "127.0.0.1:0")
+	t.Setenv("DATABASE_URL", "postgres://u:p@db/app")
+	t.Setenv("PGSERVERLESS_TLS_CERT", certFile)
+	t.Setenv("PGSERVERLESS_TLS_KEY", "")
+	if err := run(); err == nil || !strings.Contains(err.Error(), "PGSERVERLESS_TLS_KEY") {
+		t.Errorf("run() = %v, want the TLS pair refused", err)
+	}
+}
+
+func TestServeAnswersOverTLSWithTheCertificate(t *testing.T) {
+	certFile, keyFile, certPEM := servingCertFiles(t)
+	cert, err := loadServingCert(certFile, keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := pgserverless.ParseConnectionString("postgres://owner:secret@db.example.test:5433/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admit := httpAdmission(db, upstreamTLS{})
+	srv := newServer(context.Background(), "", newMux(admit, admit, nil, nil), idleTimeout)
+	srv.TLSConfig = servingTLSConfig(cert)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- serve(srv, ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		if err := <-done; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
+
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(certPEM)
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}, ForceAttemptHTTP2: true}, Timeout: 10 * time.Second}
+	base := "https://" + ln.Addr().String()
+
+	res, err := client.Get(base + "/health")
+	if err != nil {
+		t.Fatalf("GET /health over TLS: %v", err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || res.TLS == nil || !strings.Contains(string(body), `"ok"`) {
+		t.Errorf("GET /health = %d %q (TLS %v), want 200 ok over TLS", res.StatusCode, body, res.TLS != nil)
+	}
+
+	// No Connection-String: the handler answers before dialing, which shows POST /sql is served too.
+	res, err = client.Post(base+"/sql", "application/json", strings.NewReader(`{"query":"SELECT 1"}`))
+	if err != nil {
+		t.Fatalf("POST /sql over TLS: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("POST /sql without Connection-String = %d, want 400", res.StatusCode)
+	}
+
+	plain, err := http.Get("http://" + ln.Addr().String() + "/health")
+	if err == nil {
+		_ = plain.Body.Close()
+		if plain.StatusCode == http.StatusOK {
+			t.Error("plain HTTP on the TLS listener answered 200, want it refused")
+		}
 	}
 }

@@ -14,6 +14,8 @@
 // WebSocket upgrades are accepted, and a loopback listener refuses a Host
 // that is not a loopback name. PGSERVERLESS_LOG_LEVEL is debug, info (the default), warn or error,
 // and PGSERVERLESS_LOG_FORMAT is text (the default) or json.
+// PGSERVERLESS_TLS_CERT and PGSERVERLESS_TLS_KEY, PEM files set together, make
+// it serve HTTPS and WSS instead of plain HTTP; they do not replace the token.
 package main
 
 import (
@@ -84,6 +86,10 @@ func run() error {
 	if tls.cert, err = loadClientCert(tls.certFile, tls.keyFile); err != nil {
 		return err
 	}
+	serving, err := loadServingCert(os.Getenv("PGSERVERLESS_TLS_CERT"), os.Getenv("PGSERVERLESS_TLS_KEY"))
+	if err != nil {
+		return err
+	}
 	origins := splitOrigins(os.Getenv("PGSERVERLESS_CORS_ORIGINS"))
 	admitHTTP := requireToken(token, httpAdmission(db, tls))
 	admitWS := requireToken(token, wsAdmission(db, tls))
@@ -95,14 +101,19 @@ func run() error {
 	requestCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
 	srv := newServer(requestCtx, addr, mux, idleTimeout)
+	srv.TLSConfig = servingTLSConfig(serving)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("pgserverless: listening", "addr", addr, "upstream", net.JoinHostPort(db.Host, db.Port), "auth", token != "")
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Info("pgserverless: listening", "addr", addr, "upstream", net.JoinHostPort(db.Host, db.Port), "auth", token != "", "tls", serving != nil)
+		if err := serve(srv, ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 		close(errCh)
@@ -129,6 +140,36 @@ func newServer(base context.Context, addr string, h http.Handler, idle time.Dura
 		IdleTimeout:       idle,
 		BaseContext:       func(net.Listener) context.Context { return base },
 	}
+}
+
+// serve answers HTTPS on ln when srv has a TLS config, and plain HTTP otherwise.
+func serve(srv *http.Server, ln net.Listener) error {
+	if srv.TLSConfig != nil {
+		return srv.ServeTLS(ln, "", "")
+	}
+	return srv.Serve(ln)
+}
+
+// loadServingCert reads PGSERVERLESS_TLS_CERT and PGSERVERLESS_TLS_KEY as PEM files; neither set means plain HTTP.
+func loadServingCert(certFile, keyFile string) (*tls.Certificate, error) {
+	switch {
+	case certFile == "" && keyFile == "":
+		return nil, nil
+	case certFile == "" || keyFile == "":
+		return nil, errors.New("PGSERVERLESS_TLS_CERT and PGSERVERLESS_TLS_KEY must be set together")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("PGSERVERLESS_TLS_CERT and PGSERVERLESS_TLS_KEY: %w", err)
+	}
+	return &cert, nil
+}
+
+func servingTLSConfig(cert *tls.Certificate) *tls.Config {
+	if cert == nil {
+		return nil
+	}
+	return &tls.Config{Certificates: []tls.Certificate{*cert}, MinVersion: tls.VersionTLS12}
 }
 
 // Docker sends SIGKILL 10 s after SIGTERM, so the drain and the cancel together end before it.

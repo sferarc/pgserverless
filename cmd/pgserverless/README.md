@@ -52,7 +52,7 @@ const rows = await sql`SELECT now()`;
 import { Pool, neonConfig } from "@neondatabase/serverless";
 
 neonConfig.wsProxy = "localhost:4000/v2";
-neonConfig.useSecureWebSocket = false; // true behind TLS
+neonConfig.useSecureWebSocket = false; // true with PGSERVERLESS_TLS_CERT or behind TLS
 neonConfig.pipelineConnect = false; // required for SCRAM, see below
 
 const pool = new Pool({
@@ -74,6 +74,7 @@ With `PGSERVERLESS_AUTH_TOKEN` set, every request needs `Authorization: Bearer <
 | `PGSERVERLESS_CORS_ORIGINS` | none | Comma separated origins, or `*`, allowed to call `POST /sql` from a browser. Unset, no cross-origin page can read a response. With no token, these are also the only other origins whose browser WebSocket upgrades are accepted. |
 | `PGSERVERLESS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `PGSERVERLESS_LOG_FORMAT` | `text` | `text` for `slog` key=value lines, or `json` for one JSON object per line. Logs go to stderr. |
+| `PGSERVERLESS_TLS_CERT`, `PGSERVERLESS_TLS_KEY` | none | PEM certificate (with any intermediates) and key. Set together, the server answers HTTPS and WSS on `PGSERVERLESS_ADDR` instead of plain HTTP; it stops at start when only one is set or the pair cannot be loaded. Restart it to pick up a renewed certificate. |
 
 TLS to the database follows `DATABASE_URL`'s `sslmode` as libpq reads it:
 
@@ -101,7 +102,7 @@ Anyone who can reach this server and knows a database credential can use the dat
 - It sends no CORS headers unless origins are listed, and a request without its own `Connection-String` is refused, so a cross-site form post cannot run SQL.
 - With no token, it refuses a WebSocket upgrade from a browser page on an origin `PGSERVERLESS_CORS_ORIGINS` does not list, since browsers apply no CORS to WebSockets. A page on `http://localhost:3000` that uses `Pool` needs that origin listed.
 - With no token on a loopback listener, it refuses a `Host` other than `localhost`, a `.localhost` name or a loopback address, so a DNS rebinding page cannot reach it. To serve another name, set a token.
-- It does not terminate TLS. Run it behind something that does, or where the hop is private.
+- It serves plain HTTP unless `PGSERVERLESS_TLS_CERT` and `PGSERVERLESS_TLS_KEY` are set. Without them, run it behind something that terminates TLS, or where the hop is private. TLS does not replace the token: the rules above apply either way.
 
 ## SCRAM and pipelining
 
