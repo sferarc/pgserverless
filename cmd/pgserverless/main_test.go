@@ -241,6 +241,14 @@ func TestHTTPAdmission(t *testing.T) {
 		}
 	})
 
+	t.Run("header without a database path is refused like Neon", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/sql", nil)
+		req.Header.Set("Connection-String", "postgres://reader:pw@elsewhere.example.test")
+		if _, err := admit(req); !errors.Is(err, pgserverless.ErrMissingDatabase) {
+			t.Errorf("got %v, want ErrMissingDatabase", err)
+		}
+	})
+
 	t.Run("malformed header is refused", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/sql", nil)
 		req.Header.Set("Connection-String", "not a url")

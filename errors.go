@@ -26,6 +26,8 @@ var (
 	ErrQueryCancelled = errors.New("query was cancelled")
 	// ErrMissingPassword is Neon's answer to a request connection string with no password, or an empty one.
 	ErrMissingPassword = errors.New("missing authentication credentials: required password")
+	// ErrMissingDatabase is Neon's answer to a request connection string with no path, where the url crate finds no database.
+	ErrMissingDatabase = errors.New("missing database name")
 )
 
 // queryCancelledMessage is what Neon's proxy answers for a cancelled statement, with code 08P01 and status 400.
@@ -248,6 +250,7 @@ func parseConnectionString(s string, firstSegmentOnly bool) (*ConnInfo, error) {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidConnectionString, err)
 	}
 
+	hasPath := strings.HasPrefix(path, "/")
 	username, password, _ := strings.Cut(userinfo, ":")
 	username, password = unescapeLenient(username), unescapeLenient(password)
 	path = strings.TrimPrefix(path, "/")
@@ -262,6 +265,10 @@ func parseConnectionString(s string, firstSegmentOnly bool) (*ConnInfo, error) {
 	} else if _, err := strconv.ParseUint(port, 10, 16); err != nil {
 		// Neon's proxy and libpq refuse it too; read as a uint16, 543200 dialed port 18912.
 		return nil, fmt.Errorf("%w: invalid port %q", ErrInvalidConnectionString, port)
+	}
+	// Neon refuses no path at all, though "/" still means the user's database.
+	if firstSegmentOnly && !hasPath {
+		return nil, ErrMissingDatabase
 	}
 	if database == "" {
 		database = username
@@ -291,7 +298,8 @@ func parseConnectionString(s string, firstSegmentOnly bool) (*ConnInfo, error) {
 // Connection-String header, which must also carry a password: Neon's proxy
 // refuses one without it before connecting, so a trust or peer authenticated
 // upstream never runs a request as whatever role it names. As in Neon's proxy,
-// the database is the first path segment, so /db/extra runs against db.
+// the database is the first path segment, so /db/extra runs against db, and a
+// string with no path is refused with ErrMissingDatabase.
 func ParseRequestConnectionString(s string) (*ConnInfo, error) {
 	ci, err := parseConnectionString(s, true)
 	if err != nil {

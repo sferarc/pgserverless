@@ -167,6 +167,42 @@ func TestParseRequestConnectionStringReadsSchemeAndDatabaseLikeNeon(t *testing.T
 	}
 }
 
+// The url crate finds no path segments in a postgres:// URL with an empty path, which Neon's proxy refuses as missing database name.
+func TestParseRequestConnectionStringRefusesNoDatabasePath(t *testing.T) {
+	for _, s := range []string{
+		"postgres://u:pw@h",
+		"postgres://u:pw@h:5432",
+		"postgres://u:pw@h?sslmode=require",
+		"postgres://u:pw@h#frag",
+		"postgres://u@h",
+	} {
+		_, err := ParseRequestConnectionString(s)
+		assert.ErrorIs(t, err, ErrMissingDatabase, s)
+	}
+	_, err := ParseRequestConnectionString("postgres://u:pw@h:99999")
+	assert.ErrorIs(t, err, ErrInvalidConnectionString, "a URL error comes first, as in Neon")
+
+	ci, err := ParseConnectionString("postgres://u:pw@h")
+	require.NoError(t, err)
+	assert.Equal(t, "u", ci.Database, "DATABASE_URL keeps libpq's default")
+}
+
+func TestConformance_ConnectionStringWithoutADatabasePathIsRefused(t *testing.T) {
+	pg := pgfake.New(t)
+	pg.SetResult("SELECT 1", oneInt(1))
+	e := newConformanceServer(t, pg)
+
+	rec := doSQL(e, `{"query":"SELECT 1"}`, map[string]string{
+		"Neon-Connection-String": "postgresql://u:pw@" + conformanceHost + "?sslmode=require",
+	})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	var res ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+	assert.Equal(t, ErrMissingDatabase.Error(), res.Message)
+	assert.Empty(t, pg.StartupParam("user"), "the upstream was dialed")
+}
+
 // DATABASE_URL keeps libpq's reading, where the database is the whole path.
 func TestParseConnectionStringKeepsTheWholePathAsTheDatabase(t *testing.T) {
 	ci, err := ParseConnectionString("POSTGRES://u:pw@h/db/extra")
