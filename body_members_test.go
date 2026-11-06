@@ -74,12 +74,55 @@ func TestConformance_BodyWithARepeatedMemberIsRefused(t *testing.T) {
 	}
 }
 
+// Neon reads params into a Vec through bytes_to_pg_text, and serde_json reads no Vec from null.
+func TestConformance_NullParamsAreRefused(t *testing.T) {
+	for name, body := range map[string]string{
+		"single":        `{"query":"SELECT 1","params":null}`,
+		"batch item":    `{"queries":[{"query":"SELECT 1"},{"query":"SELECT 1","params":null}]}`,
+		"empty single":  `{"query":"","params":null}`,
+		"spaced single": `{"query":"SELECT 1","params" : null }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			pg := pgfake.New(t)
+			pg.SetResult("SELECT 1", oneInt(1))
+			e := newConformanceServer(t, pg)
+
+			rec := doSQL(e, body, driverHeaders)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Equal(t, ErrInvalidRequest.Error(), decodeError(t, rec).Message)
+			assert.Empty(t, pg.StartupParam("user"), "a refused body must not reach the database")
+		})
+	}
+}
+
+// An absent params and an empty one still bind nothing.
+func TestConformance_AbsentOrEmptyParamsRun(t *testing.T) {
+	for name, body := range map[string]string{
+		"absent":            `{"query":"SELECT 1"}`,
+		"empty":             `{"query":"SELECT 1","params":[]}`,
+		"absent in a batch": `{"queries":[{"query":"SELECT 1"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			pg := pgfake.New(t)
+			pg.SetResult("SELECT 1", oneInt(1))
+			e := newConformanceServer(t, pg)
+
+			rec := doSQL(e, body, driverHeaders)
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), `"rows":[["1"]]`)
+		})
+	}
+}
+
 // Neon's untagged Payload tries the batch shape once the single one fails, so queries still runs.
 func TestConformance_InvalidSingleShapeFallsBackToQueries(t *testing.T) {
 	for name, body := range map[string]string{
 		"repeated query":  `{"query":"SELECT 1","query":"SELECT 1","queries":[{"query":"SELECT 2"}]}`,
 		"query not text":  `{"query":2,"queries":[{"query":"SELECT 2"}]}`,
 		"params not list": `{"query":"SELECT 1","params":"x","queries":[{"query":"SELECT 2"}]}`,
+		"params null":     `{"query":"SELECT 1","params":null,"queries":[{"query":"SELECT 2"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			pg := pgfake.New(t)

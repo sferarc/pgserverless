@@ -2,6 +2,10 @@
 
 Versions of [SPEC.md](SPEC.md). These are independent of the Go module's releases, which are in the [module changelog](../CHANGELOG.md). SPEC.md section "Versioning" says what each kind of version change means.
 
+## 0.11.0 (draft)
+
+- Sections 4.2 and 4.3 require `params`, when present, to be an array, and a body or batch item whose `params` is `null` to be answered 400 with nothing run, as Neon's proxy answers it: it reads `params` into a list, and an absent member is the only one it defaults. A body that also carries `queries` runs as a batch, under the rule of 4.3. The sections only said `params` was optional, so a server reading `null` as no parameters conformed to 0.10.1, ran a request Neon's proxy refuses, and does not conform to this version. Two cases are new: `core/null-params-are-refused` at level 1 and `batch/null-params-in-an-item-are-refused` at level 3. The corpus `version` stays 2, since no existing case's expectation changed.
+
 ## 0.10.1 (draft)
 
 - Appendix B item 4 says the reference implementation's server refuses a response once its JSON passes 10 MiB, as Neon's proxy measures it. It said the row values were counted, which the reference implementation no longer does.

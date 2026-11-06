@@ -496,7 +496,7 @@ func decodeSingle(m members) (*SQLRequest, error) {
 	if req.Query == nil {
 		return nil, ErrMissingQuery
 	}
-	if m.decode("params", &req.Params) != nil || m.decode("arrayMode", &req.ArrayMode) != nil {
+	if m.decodeParams(&req.Params) != nil || m.decode("arrayMode", &req.ArrayMode) != nil {
 		return nil, ErrInvalidRequest
 	}
 	return &req, nil
@@ -518,7 +518,7 @@ func decodeBatchItems(raw json.RawMessage) ([]QueryItem, error) {
 		}
 		// The query is decoded as a pointer, so an item without one is told apart from an empty one.
 		var query *string
-		if m.decode("query", &query) != nil || m.decode("params", &queries[i].Params) != nil || m.decode("arrayMode", &queries[i].ArrayMode) != nil {
+		if m.decode("query", &query) != nil || m.decodeParams(&queries[i].Params) != nil || m.decode("arrayMode", &queries[i].ArrayMode) != nil {
 			return nil, ErrInvalidRequest
 		}
 		// Neon refuses such a body with 400; read as "", the item ran as an empty statement and the batch answered 200.
@@ -556,6 +556,14 @@ func objectMembers(raw []byte) (members, error) {
 		m[name] = append(m[name], v)
 	}
 	return m, nil
+}
+
+// decodeParams reads params, refusing null as Neon's serde does: its default covers only an absent member.
+func (m members) decodeParams(v *[]any) error {
+	if vs := m["params"]; len(vs) == 1 && bytes.Equal(bytes.TrimSpace(vs[0]), []byte("null")) {
+		return errors.New(`member "params" is null`)
+	}
+	return m.decode("params", v)
 }
 
 // decode reads the member called name into v and leaves v alone when it is absent. A repeated member is an error.

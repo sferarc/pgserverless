@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.10.1",
+  "spec_version": "0.11.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -335,6 +335,30 @@
           "raw_text": false
         },
         "body": "{\"query\":\"SELECT 1\",\"query\":\"SELECT 2\"}"
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "has_fields": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "core/null-params-are-refused",
+      "level": 1,
+      "spec": "4.2",
+      "note": "No fixture needed. Neon's proxy reads params into a list and defaults it only when absent, so null fails the body with 400. A server reading null as no parameters runs SELECT 1 and answers 200.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "query": "SELECT 1",
+          "params": null
+        }
       },
       "expect": {
         "status": 400,
@@ -4243,6 +4267,37 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "id": "batch/null-params-in-an-item-are-refused",
+      "level": 3,
+      "spec": "4.3",
+      "note": "No fixture needed. An item's params follows 4.2, so null in any item fails the body with 400 before anything runs. A server reading null as no parameters answers the batch 200.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "raw_text": false
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT 1"
+            },
+            {
+              "query": "SELECT 2",
+              "params": null
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {
+          "has_fields": [
+            "message"
+          ]
+        }
       }
     },
     {

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Postgres serverless HTTP and WebSocket protocol
-  version: "0.10.1"
+  version: "0.11.0"
   description: |
     OpenAPI description of the protocol specified in SPEC.md, at the same
     version. SPEC.md is the normative text; where this file and SPEC.md differ,
@@ -359,6 +359,7 @@ components:
         Positional parameters binding `$1`, `$2` and so on. A JSON array
         parameter is bound as a PostgreSQL array literal whatever the
         parameter's type, nested arrays as nested literals (SPEC.md 4.4).
+        Optional, but `null` is refused with 400 (SPEC.md 4.2).
       type: array
       items: {}
 
