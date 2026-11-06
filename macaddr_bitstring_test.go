@@ -1,11 +1,14 @@
 package pgserverless
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,6 +55,11 @@ func TestConformance_MacaddrAndBitStringsAsText(t *testing.T) {
 			"varbit", oidVarbit,
 			pgtype.Bits{Bytes: []byte{0xB0}, Len: 4, Valid: true},
 			`"1011"`,
+		},
+		{
+			"empty varbit", oidVarbit,
+			pgtype.Bits{Bytes: []byte{}, Len: 0, Valid: true},
+			`""`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,6 +119,14 @@ func TestConformance_MacaddrAndBitStringArrays(t *testing.T) {
 				{Bytes: []byte{0x80}, Len: 1, Valid: true},
 			},
 			`["1011","1"]`,
+		},
+		{
+			"varbit array with an empty element", oidVarbitArray,
+			[]pgtype.Bits{
+				{Bytes: []byte{}, Len: 0, Valid: true},
+				{Bytes: []byte{0xA0}, Len: 3, Valid: true},
+			},
+			`["","101"]`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,10 +210,36 @@ func TestCoerceNeonValue_MacaddrAndBitStrings(t *testing.T) {
 	assert.Equal(t, any("101"), coerceNeonValue(m, bits, oidBit))
 	assert.Equal(t, any("101"), coerceNeonValue(m, bits, oidVarbit))
 
+	// An empty varbit encodes to no bytes at all, which is still a value and not NULL.
+	empty := pgtype.Bits{Bytes: []byte{}, Len: 0, Valid: true}
+	assert.Equal(t, any(""), coerceNeonValue(m, empty, oidVarbit))
+	assert.Equal(t, any(""), coerceNeonValue(m, pgtype.Bits{Valid: true}, oidVarbit))
+	assert.Equal(t, any(pgtype.Bits{}), coerceNeonValue(m, pgtype.Bits{}, oidVarbit), "an invalid Bits is NULL, not empty")
+
 	assert.Equal(t, any(mac), coerceNeonValue(nil, mac, oidMacaddr))
 	assert.Equal(t, any(bits), coerceNeonValue(nil, bits, oidBit))
 
 	// A value that already arrived as PostgreSQL text (a type pgx has no codec
 	// for, or the simple protocol) is left exactly as it came.
 	assert.Equal(t, any("08:00:2b:01:02:03"), coerceNeonValue(m, "08:00:2b:01:02:03", oidMacaddr))
+}
+
+// Checked against a real PostgreSQL: native mode spells an empty bit string as raw text mode does.
+func TestEmptyVarbitAgainstPostgres(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, url)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close(ctx) })
+
+	res, err := QueryRows(ctx, conn, `SELECT ''::varbit AS a, B''::bit varying(3) AS b, `+
+		`'{"",101}'::varbit[] AS c, ARRAY[''::varbit, NULL] AS d, '{{""},{1}}'::varbit[] AS e`, nil, true, false)
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+	got, err := json.Marshal(res.Rows[0])
+	require.NoError(t, err)
+	assert.JSONEq(t, `["", "", ["", "101"], ["", null], [[""], ["1"]]]`, string(got))
 }

@@ -406,7 +406,8 @@ func pgTextValue(m *pgtype.Map, v any, typeOID uint32) (string, bool) {
 	if m == nil {
 		return "", false
 	}
-	buf, err := m.Encode(typeOID, pgtype.TextFormatCode, v, nil)
+	// A non-nil buffer, because Encode returns nil only for SQL NULL and an empty varbit encodes to nothing.
+	buf, err := m.Encode(typeOID, pgtype.TextFormatCode, v, []byte{})
 	if err != nil || buf == nil {
 		return "", false
 	}
