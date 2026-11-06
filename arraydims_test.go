@@ -327,13 +327,13 @@ func TestConformance_MultiDimensionalArray_NullElement(t *testing.T) {
 
 // A record column is never reshaped. Its bytes parse as a two-dimensional
 // array header whose dimensions come out of the first field's data, so before
-// the codec gate this row came back as [["AAAAAgAAAAAAAAAB"],[7]]. useTextRecord
-// now asks for record_out's text, which is returned as Neon returns it.
+// the codec gate this row came back as [["AAAAAgAAAAAAAAAB"],[7]]. It now comes
+// back as PostgreSQL's record text, as Neon returns it.
 func TestConformance_RecordColumnNotReshaped(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT r FROM t", pgfake.Result{
 		Cols: []pgfake.Col{{Name: "r", TypeOID: oidRecord}},
-		Rows: [][]any{{pgfake.RawColumn(`("\\x000000020000000000000001",7)`)}},
+		Rows: [][]any{{pgfake.RawColumn(rawRecordByteaInt4)}},
 		Tag:  "SELECT 1",
 	})
 

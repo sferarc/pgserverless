@@ -19,8 +19,8 @@ var (
 	sessionLocations   = map[string]*time.Location{}
 )
 
-// useSessionTimeZone makes m decode timestamptz, alone and inside arrays and
-// ranges, into the session's TimeZone, so timestamptzText spells it as
+// useSessionTimeZone makes m decode timestamptz, alone and inside arrays, ranges
+// and records, into the session's TimeZone, so timestamptzText spells it as
 // timestamptz_out does. pgx keeps the latest TimeZone PostgreSQL reported, so a
 // SET applies to later requests and to later items of a native-mode batch, which
 // takes one round trip per item (executeBatch pipelines only raw text, where
@@ -185,30 +185,4 @@ func utcOffset(east int) string {
 		writeTwoDigits(&b, uint64(s))
 	}
 	return b.String()
-}
-
-// timestampFieldText spells a timestamp as timestamp_out does, and a timestamptz in its session zone, for a column and a record field alike.
-func timestampFieldText(m *pgtype.Map, oid uint32, v any) (string, bool) {
-	if s, ok := infinityText(v); ok {
-		return s, true
-	}
-	if s, ok := styledDateTimeText(m, oid, v); ok {
-		return s, true
-	}
-	if t, isTime := v.(time.Time); isTime && oid == oidTimestamptz {
-		return timestamptzText(m, t)
-	}
-	s, ok := encodeText(m, oid, v)
-	if ok && oid == oidTimestamptz {
-		s = utcOffsetText(s)
-	}
-	return s, ok
-}
-
-func encodeText(m *pgtype.Map, oid uint32, v any) (string, bool) {
-	buf, err := m.Encode(oid, pgtype.TextFormatCode, v, nil)
-	if err != nil || buf == nil {
-		return "", false
-	}
-	return string(buf), true
 }

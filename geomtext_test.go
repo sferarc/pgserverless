@@ -51,3 +51,11 @@ func TestGeometryTextMatchesPostgres(t *testing.T) {
 		assert.False(t, ok, "%#v", in)
 	}
 }
+
+// SELECT row(point(1e20,1)) prints ("(1e+20,1)"); the record path renders a point field through coerceNeonValue.
+func TestRecordTextPointField(t *testing.T) {
+	m := pgtype.NewMap()
+	got, ok := recordText(m, binaryRecord(encodeBinary(t, m, oidPoint, pgtype.Point{P: pgtype.Vec2{X: 1e20, Y: 1}, Valid: true})))
+	require.True(t, ok)
+	assert.Equal(t, `("(1e+20,1)")`, got)
+}

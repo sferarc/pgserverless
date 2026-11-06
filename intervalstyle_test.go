@@ -65,36 +65,41 @@ func TestIntervalTextInMatchesPostgres(t *testing.T) {
 	}
 }
 
-// A session reporting a non-default IntervalStyle gets intervals and interval
-// arrays spelled in it, where native mode always said postgres.
+// A session reporting a non-default IntervalStyle gets intervals, interval
+// arrays and record fields spelled in it, where native mode always said postgres.
 func TestConformance_IntervalInSessionIntervalStyle(t *testing.T) {
 	day2h := pgtype.Interval{Days: 1, Microseconds: 2 * usecPerHour, Valid: true}
+	m := pgtype.NewMap()
+	field, err := m.Encode(pgtype.IntervalOID, pgtype.BinaryFormatCode, day2h, nil)
+	require.NoError(t, err)
 	cols := []pgfake.Col{
 		{Name: "i", TypeOID: pgtype.IntervalOID},
 		{Name: "arr", TypeOID: pgtype.IntervalArrayOID},
+		{Name: "rec", TypeOID: oidRecord},
 	}
-	row := []any{day2h, []pgtype.Interval{day2h, {Months: 14, Valid: true}}}
+	row := []any{day2h, []pgtype.Interval{day2h, {Months: 14, Valid: true}}, pgfake.RawColumn(binaryRecord(recordField{pgtype.IntervalOID, field}))}
 
 	for _, tc := range []struct {
-		style  string
-		i, arr string
+		style          string
+		i, arr, record string
 	}{
-		{"iso_8601", `"P1DT2H"`, `["P1DT2H","P1Y2M"]`},
-		{"sql_standard", `"1 2:00:00"`, `["1 2:00:00","1-2"]`},
-		{"postgres_verbose", `"@ 1 day 2 hours"`, `["@ 1 day 2 hours","@ 1 year 2 mons"]`},
-		{"postgres", `"1 day 02:00:00"`, `["1 day 02:00:00","1 year 2 mons"]`},
-		{"", `"1 day 02:00:00"`, `["1 day 02:00:00","1 year 2 mons"]`},
+		{"iso_8601", `"P1DT2H"`, `["P1DT2H","P1Y2M"]`, `"(P1DT2H)"`},
+		{"sql_standard", `"1 2:00:00"`, `["1 2:00:00","1-2"]`, `"(\"1 2:00:00\")"`},
+		{"postgres_verbose", `"@ 1 day 2 hours"`, `["@ 1 day 2 hours","@ 1 year 2 mons"]`, `"(\"@ 1 day 2 hours\")"`},
+		{"postgres", `"1 day 02:00:00"`, `["1 day 02:00:00","1 year 2 mons"]`, `"(\"1 day 02:00:00\")"`},
+		{"", `"1 day 02:00:00"`, `["1 day 02:00:00","1 year 2 mons"]`, `"(\"1 day 02:00:00\")"`},
 	} {
 		t.Run(tc.style, func(t *testing.T) {
 			pg := pgfake.New(t)
 			pg.SetIntervalStyle(tc.style)
-			pg.SetResult("SELECT i, arr FROM t", pgfake.Result{Cols: cols, Rows: [][]any{row}, Tag: "SELECT 1"})
+			pg.SetResult("SELECT i, arr, rec FROM t", pgfake.Result{Cols: cols, Rows: [][]any{row}, Tag: "SELECT 1"})
 			e := newConformanceServer(t, pg)
 
-			rec := doSQL(e, `{"query":"SELECT i, arr FROM t"}`, nil)
+			rec := doSQL(e, `{"query":"SELECT i, arr, rec FROM t"}`, nil)
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 			assert.JSONEq(t, tc.i, firstColumn(t, rec.Body.Bytes(), "i"))
 			assert.JSONEq(t, tc.arr, firstColumn(t, rec.Body.Bytes(), "arr"))
+			assert.JSONEq(t, tc.record, firstColumn(t, rec.Body.Bytes(), "rec"))
 		})
 	}
 }

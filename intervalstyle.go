@@ -37,8 +37,8 @@ func (c *styledIntervalCodec) DecodeValue(m *pgtype.Map, oid uint32, format int1
 	return styledInterval{Interval: iv, style: c.style}, nil
 }
 
-// useSessionIntervalStyle makes m decode interval, alone and inside arrays,
-// so clockText spells it as interval_out does under the IntervalStyle
+// useSessionIntervalStyle makes m decode interval, alone and inside arrays and
+// records, so clockText spells it as interval_out does under the IntervalStyle
 // PostgreSQL last reported. Like useSessionTimeZone it follows a SET in an earlier
 // batch item, and m's types are replaced only when the style changes.
 func useSessionIntervalStyle(m *pgtype.Map, conn *pgx.Conn) {

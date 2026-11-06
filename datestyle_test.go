@@ -71,16 +71,22 @@ func TestStyledDateTimeTextNumericZone(t *testing.T) {
 }
 
 // A session reporting a non-ISO DateStyle gets date, timestamp and timestamptz,
-// their arrays and ranges spelled in it, where native mode always said ISO.
+// their arrays, ranges and record fields spelled in it, where native mode always said ISO.
 func TestConformance_DatesInSessionDateStyle(t *testing.T) {
 	date := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	ts := time.Date(2024, 1, 2, 10, 0, 0, 0, time.UTC)
+	m := pgtype.NewMap()
+	dateField, err := m.Encode(pgtype.DateOID, pgtype.BinaryFormatCode, date, nil)
+	require.NoError(t, err)
+	tsField, err := m.Encode(pgtype.TimestampOID, pgtype.BinaryFormatCode, ts, nil)
+	require.NoError(t, err)
 	cols := []pgfake.Col{
 		{Name: "d", TypeOID: pgtype.DateOID},
 		{Name: "ts", TypeOID: pgtype.TimestampOID},
 		{Name: "tstz", TypeOID: pgtype.TimestamptzOID},
 		{Name: "arr", TypeOID: pgtype.DateArrayOID},
 		{Name: "dr", TypeOID: pgtype.DaterangeOID},
+		{Name: "rec", TypeOID: oidRecord},
 	}
 	row := []any{
 		date, ts, ts,
@@ -89,17 +95,18 @@ func TestConformance_DatesInSessionDateStyle(t *testing.T) {
 			Lower: pgtype.Date{Time: date, Valid: true}, Upper: pgtype.Date{Time: date.AddDate(0, 0, 3), Valid: true},
 			LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true,
 		},
+		pgfake.RawColumn(binaryRecord(recordField{pgtype.DateOID, dateField}, recordField{pgtype.TimestampOID, tsField})),
 	}
 
 	for _, tc := range []struct {
-		style                string
-		d, ts, tstz, arr, dr string
+		style                     string
+		d, ts, tstz, arr, dr, rec string
 	}{
-		{"SQL, DMY", `"02/01/2024"`, `"02/01/2024 10:00:00"`, `"02/01/2024 10:00:00 UTC"`, `["02/01/2024"]`, `"[02/01/2024,05/01/2024)"`},
-		{"Postgres, MDY", `"01-02-2024"`, `"Tue Jan 02 10:00:00 2024"`, `"Tue Jan 02 10:00:00 2024 UTC"`, `["01-02-2024"]`, `"[01-02-2024,01-05-2024)"`},
-		{"German, DMY", `"02.01.2024"`, `"02.01.2024 10:00:00"`, `"02.01.2024 10:00:00 UTC"`, `["02.01.2024"]`, `"[02.01.2024,05.01.2024)"`},
-		{"ISO, DMY", `"2024-01-02"`, `"2024-01-02 10:00:00"`, `"2024-01-02 10:00:00+00"`, `["2024-01-02"]`, `"[2024-01-02,2024-01-05)"`},
-		{"", `"2024-01-02"`, `"2024-01-02 10:00:00"`, `"2024-01-02 10:00:00+00"`, `["2024-01-02"]`, `"[2024-01-02,2024-01-05)"`},
+		{"SQL, DMY", `"02/01/2024"`, `"02/01/2024 10:00:00"`, `"02/01/2024 10:00:00 UTC"`, `["02/01/2024"]`, `"[02/01/2024,05/01/2024)"`, `"(02/01/2024,\"02/01/2024 10:00:00\")"`},
+		{"Postgres, MDY", `"01-02-2024"`, `"Tue Jan 02 10:00:00 2024"`, `"Tue Jan 02 10:00:00 2024 UTC"`, `["01-02-2024"]`, `"[01-02-2024,01-05-2024)"`, `"(01-02-2024,\"Tue Jan 02 10:00:00 2024\")"`},
+		{"German, DMY", `"02.01.2024"`, `"02.01.2024 10:00:00"`, `"02.01.2024 10:00:00 UTC"`, `["02.01.2024"]`, `"[02.01.2024,05.01.2024)"`, `"(02.01.2024,\"02.01.2024 10:00:00\")"`},
+		{"ISO, DMY", `"2024-01-02"`, `"2024-01-02 10:00:00"`, `"2024-01-02 10:00:00+00"`, `["2024-01-02"]`, `"[2024-01-02,2024-01-05)"`, `"(2024-01-02,\"2024-01-02 10:00:00\")"`},
+		{"", `"2024-01-02"`, `"2024-01-02 10:00:00"`, `"2024-01-02 10:00:00+00"`, `["2024-01-02"]`, `"[2024-01-02,2024-01-05)"`, `"(2024-01-02,\"2024-01-02 10:00:00\")"`},
 	} {
 		t.Run(tc.style, func(t *testing.T) {
 			pg := pgfake.New(t)
@@ -116,6 +123,7 @@ func TestConformance_DatesInSessionDateStyle(t *testing.T) {
 			assert.JSONEq(t, tc.tstz, firstColumn(t, body, "tstz"))
 			assert.JSONEq(t, tc.arr, firstColumn(t, body, "arr"))
 			assert.JSONEq(t, tc.dr, firstColumn(t, body, "dr"))
+			assert.JSONEq(t, tc.rec, firstColumn(t, body, "rec"))
 		})
 	}
 }

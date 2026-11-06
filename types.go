@@ -39,8 +39,8 @@ const (
 	oidMoneyArray  uint32 = 791
 	oidUUID        uint32 = 2950
 	oidUUIDArray   uint32 = 2951
-	// record is what row(...) returns. pgx decodes a binary one to a []any, like an
-	// array, which is why reshapeArrayValue cannot decide from the decoded value alone.
+	// record is what row(...) returns. pgx decodes it to a []any, like an array,
+	// which is why reshapeArrayValue cannot decide from the decoded value alone.
 	oidRecord uint32 = 2249
 
 	// Types whose pgx-decoded Go value does not JSON-marshal to PostgreSQL's
@@ -187,12 +187,6 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 	// bytea[] has a codec, but useTextBytea has it arrive as text.
 	if typeOID == oidByteaArray {
 		if elems, ok := textArrayElems(v, oidBytea); ok {
-			return elems
-		}
-	}
-	// record[] likewise arrives as text through useTextRecord, each element a record_out string.
-	if typeOID == oidRecordArray {
-		if elems, ok := textArrayElems(v, oidRecord); ok {
 			return elems
 		}
 	}
