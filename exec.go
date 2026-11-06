@@ -21,6 +21,7 @@ func queryRows(ctx context.Context, conn *pgx.Conn, query string, params []any, 
 	}
 	if !rawText {
 		useTextBytea(conn.TypeMap())
+		useTextFloat(conn.TypeMap())
 	}
 	rows, err := conn.Query(ctx, query, params...)
 	if err != nil {
@@ -207,6 +208,7 @@ func executeBatchTxn(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context,
 // returns with the transaction open, and closing the connection rolls it back.
 func executeBatchInOrder(w http.ResponseWriter, conn *pgx.Conn, ctx context.Context, queries []QueryItem, arrayMode bool, opts txnOptions, budget *responseBudget) {
 	useTextBytea(conn.TypeMap())
+	useTextFloat(conn.TypeMap())
 	if _, err := conn.Exec(ctx, opts.beginSQL()); err != nil {
 		writeQueryError(ctx, w, err)
 		return

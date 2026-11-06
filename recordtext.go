@@ -77,7 +77,7 @@ func recordFieldText(m *pgtype.Map, oid uint32, field []byte) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if codec, isArray := t.Codec.(*pgtype.ArrayCodec); isArray {
+	if codec, isArray := arrayCodecOf(t.Codec); isArray {
 		if codec.ElementType == nil {
 			return "", false
 		}

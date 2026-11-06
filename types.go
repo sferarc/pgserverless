@@ -190,6 +190,12 @@ func coerceNeonValue(m *pgtype.Map, v any, typeOID uint32) any {
 			return elems
 		}
 	}
+	// float4[] and float8[] likewise arrive as text through useTextFloat.
+	if typeOID == oidFloat4Array || typeOID == oidFloat8Array {
+		if elems, ok := textFloatArrayElems(v); ok {
+			return elems
+		}
+	}
 	switch typeOID {
 	case oidInt8:
 		if n, ok := v.(int64); ok {
