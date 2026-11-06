@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.2
+
+### Patch Changes
+
+- b76c615: Native mode spells a `bytea` in the session's `bytea_output`, as PostgreSQL and Neon's proxy do, instead of always in hex. A database, role or earlier batch item set to `escape` now answers `\001\002` for the column and its array elements, matching raw-text mode. A `bytea` field inside a record is still spelled in hex.
+- c561088: Native mode spells `date`, `timestamp` and `timestamptz` in the session's `DateStyle`, as PostgreSQL and Neon's proxy do, instead of always in ISO. A database, role or earlier batch item set to `SQL`, `Postgres` or `German` now answers `01/02/2024`, `Tue Jan 02 10:00:00 2024 PST` or `02.01.2024` for the column, its array elements, range bounds and record fields, matching raw-text mode. An ISO session is unchanged.
+- ffb2311: Native mode spells `float4` and `float8` in the session's `extra_float_digits`, as Neon's proxy does, instead of always with the shortest round-trip digits. A database, role or earlier batch item set to `extra_float_digits = 0` now answers `0.3` for `0.1::float8 + 0.2`, for the column and its array elements. Output under the default setting is unchanged, and a float field inside a record keeps its shortest digits.
+
 ## 0.10.1
 
 ### Patch Changes
