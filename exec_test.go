@@ -258,10 +258,13 @@ func TestIsolationLevelSpellings(t *testing.T) {
 	}{
 		{"", "", false},
 		{"ReadUncommitted", "READ UNCOMMITTED", false},
-		{"read committed", "READ COMMITTED", false},
-		{"REPEATABLE_READ", "REPEATABLE READ", false},
-		{" serializable ", "SERIALIZABLE", false},
-		{"read-committed", "READ COMMITTED", false},
+		{"ReadCommitted", "READ COMMITTED", false},
+		{"RepeatableRead", "REPEATABLE READ", false},
+		{"Serializable", "SERIALIZABLE", false},
+		{"read committed", "", true},
+		{"REPEATABLE_READ", "", true},
+		{"serializable", "", true},
+		{"read-committed", "", true},
 		{"snapshot", "", true},
 		{"serializable; drop table users", "", true},
 	} {

@@ -988,19 +988,36 @@ func TestConformance_BatchIsolationLevel_Serializable(t *testing.T) {
 	assert.Contains(t, begin, "DEFERRABLE")
 }
 
-// An unrecognized isolation level fails closed with a 400 rather than silently
-// dropping the guarantee the caller asked for.
+// An isolation level outside Neon's four spellings, an empty one included, is
+// refused with Neon's 400 before anything runs, on a batch or a single query.
 func TestConformance_BatchIsolationLevel_Invalid(t *testing.T) {
-	pg := pgfake.New(t)
-	e := newConformanceServer(t, pg)
+	batch := `{"queries":[{"query":"SELECT 1"}]}`
+	for _, tc := range []struct {
+		name, body string
+		headers    map[string]string
+	}{
+		{"unknown level", batch, map[string]string{"Neon-Batch-Isolation-Level": "Bogus"}},
+		{"lower case", batch, map[string]string{"Neon-Batch-Isolation-Level": "serializable"}},
+		{"SQL spelling", batch, map[string]string{"Neon-Batch-Isolation-Level": "repeatable read"}},
+		{"snake case", batch, map[string]string{"Neon-Batch-Isolation-Level": "READ_COMMITTED"}},
+		{"plain name", batch, map[string]string{"Batch-Isolation-Level": "read committed"}},
+		{"empty", batch, map[string]string{"Neon-Batch-Isolation-Level": ""}},
+		{"empty plain name", batch, map[string]string{"Batch-Isolation-Level": ""}},
+		{"single query", `{"query":"SELECT 1"}`, map[string]string{"Neon-Batch-Isolation-Level": "serializable"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pg := pgfake.New(t)
+			e := newConformanceServer(t, pg)
 
-	rec := doSQL(e, `{"queries":[{"query":"SELECT 1"}]}`, map[string]string{
-		"Neon-Batch-Isolation-Level": "Bogus",
-	})
-	assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
-	var errResp ErrorResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
-	assert.Contains(t, errResp.Message, "invalid isolation level")
+			rec := doSQL(e, tc.body, tc.headers)
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			var errResp ErrorResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+			assert.Equal(t, "invalid isolation level", errResp.Message)
+			assert.Empty(t, pg.LastBegin())
+			assert.Empty(t, rec.Header().Get("Neon-Batch-Isolation-Level"))
+		})
+	}
 }
 
 // A read-only request spelled "True" is still a read-only request. Header
@@ -1084,13 +1101,6 @@ func TestConformance_BatchEchoesTransactionHeaders(t *testing.T) {
 				"Neon-Batch-Read-Only":       "true",
 				"Neon-Batch-Deferrable":      "true",
 			},
-		},
-		{
-			name:    "isolation level in another spelling",
-			body:    `{"queries":[{"query":"SELECT 1 AS one"}]}`,
-			headers: map[string]string{"Batch-Isolation-Level": "repeatable read"},
-			status:  http.StatusOK,
-			want:    map[string]string{"Neon-Batch-Isolation-Level": "RepeatableRead"},
 		},
 		{
 			name:    "read only spelled True",

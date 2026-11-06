@@ -333,6 +333,7 @@ func (h *Handler) dialErrorFor(c echo.Context) func(error) {
 
 // serveSQL is the transport-independent core of POST /sql.
 func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), count func(string) (int, error), maxResponse int64, bodyTimeout, writeTimeout time.Duration) {
+	requestID := setRequestID(w)
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 	limitBodyRead(w, r, bodyTimeout)
 
@@ -387,7 +388,7 @@ func serveSQL(w http.ResponseWriter, r *http.Request, admit func() (Upstream, er
 		if onDialError != nil {
 			onDialError(err)
 		}
-		slog.Warn("pgserverless: connect failed", "err", SanitizeError(err.Error()))
+		slog.Warn("pgserverless: connect failed", "err", SanitizeError(err.Error()), "request_id", requestID)
 		writeDialError(w, err)
 		return
 	}

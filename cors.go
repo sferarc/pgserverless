@@ -35,6 +35,7 @@ func allowOrigin(w http.ResponseWriter, r *http.Request, origins []string) bool 
 
 // servePreflight answers OPTIONS /sql with the headers Neon's proxy sends.
 func servePreflight(w http.ResponseWriter, r *http.Request, origins []string) {
+	setRequestID(w)
 	w.Header().Set("Allow", "OPTIONS, POST")
 	if allowOrigin(w, r, origins) {
 		w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)

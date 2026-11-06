@@ -1,6 +1,7 @@
 package pgserverless
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 // @neondatabase/serverless driver sends for sql.transaction([...], opts).
 // They arrive as HTTP headers (already normalized from their Neon-* form):
 //
-//	Batch-Isolation-Level: ReadUncommitted | ReadCommitted | RepeatableRead | Serializable
+//	Batch-Isolation-Level: ReadUncommitted | ReadCommitted | RepeatableRead | Serializable (exactly)
 //	Batch-Read-Only:       true | false
 //	Batch-Deferrable:      true | false
 //
@@ -33,6 +34,9 @@ func parseTxnOptions(h http.Header) (txnOptions, error) {
 	level, err := isolationLevelSQL(h.Get("Batch-Isolation-Level"))
 	if err != nil {
 		return txnOptions{}, err
+	}
+	if level == "" && headerPresent(h, "Batch-Isolation-Level") {
+		return txnOptions{}, errInvalidIsolationLevel
 	}
 	readOnly, err := boolOption(h, "Batch-Read-Only")
 	if err != nil {
@@ -69,28 +73,35 @@ func boolOption(h http.Header, name string) (bool, error) {
 	return v, nil
 }
 
-// isolationLevelSQL maps the driver's isolation-level option (camelCase, as in
-// the Neon TypeScript enum) to its SQL-standard spelling. The match is
-// case-insensitive and tolerant of spaces/underscores so equivalent spellings
-// (e.g. "read committed") also resolve. An empty option yields "" (server
-// default); an unrecognized value yields an error so we fail closed rather than
-// silently dropping an isolation guarantee the caller asked for.
+// errInvalidIsolationLevel is Neon's refusal of an isolation level header, word for word.
+var errInvalidIsolationLevel = errors.New("invalid isolation level")
+
+// isolationLevelSQL maps the driver's isolation-level header to its SQL
+// spelling. Like Neon's proxy it takes only the four camelCase names, exactly,
+// so a client that works here also works against Neon. An empty option yields
+// "" (server default); any other value is refused rather than dropped, since
+// the caller asked the server to enforce an isolation guarantee.
 func isolationLevelSQL(opt string) (string, error) {
-	norm := strings.ToLower(strings.NewReplacer(" ", "", "_", "", "-", "").Replace(strings.TrimSpace(opt)))
-	switch norm {
+	switch opt {
 	case "":
 		return "", nil
-	case "readuncommitted":
+	case "ReadUncommitted":
 		return "READ UNCOMMITTED", nil
-	case "readcommitted":
+	case "ReadCommitted":
 		return "READ COMMITTED", nil
-	case "repeatableread":
+	case "RepeatableRead":
 		return "REPEATABLE READ", nil
-	case "serializable":
+	case "Serializable":
 		return "SERIALIZABLE", nil
 	default:
-		return "", fmt.Errorf("invalid isolation level %q", opt)
+		return "", errInvalidIsolationLevel
 	}
+}
+
+// headerPresent reports whether a batch header was sent under its plain or
+// Neon-prefixed name, even with an empty value, which normalization does not copy.
+func headerPresent(h http.Header, name string) bool {
+	return len(h.Values(name)) > 0 || len(h.Values("Neon-"+name)) > 0
 }
 
 // beginSQL renders the BEGIN statement that opens the batch transaction with the

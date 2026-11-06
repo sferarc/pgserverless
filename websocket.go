@@ -137,6 +137,7 @@ func (h *Handler) Upgrade(c echo.Context) error {
 // A zero startupWait allows startupTimeout, and a nil tunnels tracks nothing.
 func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstream, error), onDialError func(error), startupWait time.Duration, tunnels *Tunnels) {
 	ctx := r.Context()
+	requestID := setRequestID(w)
 
 	// Admission runs BEFORE the upgrade, so a refusal is an ordinary HTTP
 	// error the client can read. Refusing after the upgrade would send the
@@ -159,7 +160,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 	})
 	if err != nil {
 		// websocket.Accept has already written a response.
-		slog.Warn("pgserverless: websocket upgrade failed", "err", err)
+		slog.Warn("pgserverless: websocket upgrade failed", "err", err, "request_id", requestID)
 		return
 	}
 	defer ws.CloseNow()
@@ -175,7 +176,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 	_ = client.SetReadDeadline(time.Now().Add(startupWait))
 	startup, cancel, err := declineEncryptionAndReadStartup(client)
 	if err != nil {
-		slog.Warn("pgserverless: websocket startup failed", "err", err)
+		slog.Warn("pgserverless: websocket startup failed", "err", err, "request_id", requestID)
 		return
 	}
 	_ = client.SetReadDeadline(time.Time{})
@@ -185,7 +186,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 		if onDialError != nil {
 			onDialError(err)
 		}
-		slog.Warn("pgserverless: websocket upstream dial failed", "err", SanitizeError(err.Error()))
+		slog.Warn("pgserverless: websocket upstream dial failed", "err", SanitizeError(err.Error()), "request_id", requestID)
 		if cancel {
 			// PostgreSQL answers a CancelRequest with nothing, so its client reads nothing either.
 			return
@@ -206,7 +207,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, admit func() (Upstre
 	// Forward the startup the client already sent. It was consumed to get here,
 	// so the upstream never sees it unless it is replayed.
 	if _, err := server.Write(startup); err != nil {
-		slog.Warn("pgserverless: forwarding startup failed", "err", err)
+		slog.Warn("pgserverless: forwarding startup failed", "err", err, "request_id", requestID)
 		return
 	}
 
