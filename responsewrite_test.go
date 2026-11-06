@@ -36,8 +36,16 @@ func (w *writeErrRecorder) Write(b []byte) (int, error) {
 
 func (w *writeErrRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// writeDeadlineServers serves both transports on a real listener, since a write deadline needs a connection, and reports each POST /sql handler's first write error on returned once it returns.
-func writeDeadlineServers(t *testing.T, upstreamAddr string) (map[string]string, <-chan error) {
+// handlerReturnTimeout only has to outlast building bigResult under the race detector on a busy runner; a handler with no write deadline never returns.
+const handlerReturnTimeout = 60 * time.Second
+
+// writeDeadlineServer is one transport on a real listener, since a write deadline needs a connection; returned gets each POST /sql handler's first write error once it returns.
+type writeDeadlineServer struct {
+	addr     string
+	returned <-chan error
+}
+
+func writeDeadlineServers(t *testing.T, upstreamAddr string) map[string]writeDeadlineServer {
 	t.Helper()
 	static := StaticUpstream(upstreamAddr)
 	e := echo.New()
@@ -54,18 +62,19 @@ func writeDeadlineServers(t *testing.T, upstreamAddr string) (map[string]string,
 		return up, err
 	}, func(h *httpHandler) { h.writeTimeout = shortWriteTimeout })
 
-	returned := make(chan error, 16)
-	addrs := map[string]string{}
+	servers := map[string]writeDeadlineServer{}
 	for name, h := range map[string]http.Handler{"echo": e, "net/http": std} {
+		// Per transport, so a handler still running after its subtest cannot answer the next one.
+		returned := make(chan error, 16)
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rec := &writeErrRecorder{ResponseWriter: w}
 			defer func() { returned <- rec.err }()
 			h.ServeHTTP(rec, r)
 		}))
 		t.Cleanup(srv.Close)
-		addrs[name] = strings.TrimPrefix(srv.URL, "http://")
+		servers[name] = writeDeadlineServer{addr: strings.TrimPrefix(srv.URL, "http://"), returned: returned}
 	}
-	return addrs, returned
+	return servers
 }
 
 // bigResult is far larger than loopback socket buffers, so a client that never reads stalls the write.
@@ -82,10 +91,9 @@ func TestStalledResponseReaderIsCutOff(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT big", bigResult())
 
-	addrs, returned := writeDeadlineServers(t, pg.Addr())
-	for name, addr := range addrs {
+	for name, srv := range writeDeadlineServers(t, pg.Addr()) {
 		t.Run(name, func(t *testing.T) {
-			conn, err := net.Dial("tcp", addr)
+			conn, err := net.Dial("tcp", srv.addr)
 			require.NoError(t, err)
 			defer conn.Close()
 			if tcp, ok := conn.(*net.TCPConn); ok {
@@ -103,8 +111,8 @@ func TestStalledResponseReaderIsCutOff(t *testing.T) {
 			start := time.Now()
 			var writeErr error
 			select {
-			case writeErr = <-returned:
-			case <-time.After(5 * time.Second):
+			case writeErr = <-srv.returned:
+			case <-time.After(handlerReturnTimeout):
 				t.Fatal("the handler kept writing to a client that stopped reading")
 			}
 			assert.GreaterOrEqual(t, time.Since(start), shortWriteTimeout)
@@ -118,8 +126,7 @@ func TestResponseWriteDeadlineIsClearedForTheNextRequest(t *testing.T) {
 	pg := pgfake.New(t)
 	pg.SetResult("SELECT 1", oneInt(1))
 
-	addrs, _ := writeDeadlineServers(t, pg.Addr())
-	for name, addr := range addrs {
+	for name, srv := range writeDeadlineServers(t, pg.Addr()) {
 		t.Run(name, func(t *testing.T) {
 			client := &http.Client{Transport: &http.Transport{MaxConnsPerHost: 1}}
 			defer client.CloseIdleConnections()
@@ -128,7 +135,7 @@ func TestResponseWriteDeadlineIsClearedForTheNextRequest(t *testing.T) {
 					// Past the first response's deadline, on the same keep-alive connection.
 					time.Sleep(2 * shortWriteTimeout)
 				}
-				req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/sql", strings.NewReader(`{"query":"SELECT 1"}`))
+				req, err := http.NewRequest(http.MethodPost, "http://"+srv.addr+"/sql", strings.NewReader(`{"query":"SELECT 1"}`))
 				require.NoError(t, err)
 				req.Header.Set("Neon-Connection-String", "postgresql://u:p@"+conformanceHost+"/db")
 				resp, err := client.Do(req)
