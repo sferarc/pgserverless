@@ -499,16 +499,12 @@ func rangeBoundText(m *pgtype.Map, bound any, boundType pgtype.BoundType, elemOI
 	if boundType == pgtype.Unbounded || bound == nil {
 		return "", true
 	}
-	if t, isTime := bound.(time.Time); isTime && elemOID == pgtype.TimestamptzOID {
-		s, ok := timestamptzText(m, t)
-		if !ok {
-			return "", false
-		}
-		return quoteRangeBound(s), true
-	}
 	s, ok := pgTextValue(m, bound, elemOID)
 	if !ok {
 		return "", false
+	}
+	if elemOID == pgtype.TimestamptzOID {
+		s = utcOffsetText(s)
 	}
 	return quoteRangeBound(s), true
 }

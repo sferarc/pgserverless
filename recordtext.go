@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -124,13 +123,10 @@ func pgFloatText(f float64, bitSize int) string {
 	return strconv.FormatFloat(f, 'f', -1, bitSize)
 }
 
-// timestampFieldText spells a timestamp as timestamp_out does, and a timestamptz in its session zone, for a column and a record field alike.
+// timestampFieldText spells a timestamp as timestamp_out does in a UTC session, for a column and a record field alike.
 func timestampFieldText(m *pgtype.Map, oid uint32, v any) (string, bool) {
 	if s, ok := infinityText(v); ok {
 		return s, true
-	}
-	if t, isTime := v.(time.Time); isTime && oid == oidTimestamptz {
-		return timestamptzText(m, t)
 	}
 	s, ok := encodeText(m, oid, v)
 	if ok && oid == oidTimestamptz {
