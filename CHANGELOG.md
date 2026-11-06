@@ -1,11 +1,5 @@
 # Changelog
 
-## 0.10.0
-
-### Minor Changes
-
-- 9d160a9: `pgsconform` sends the token in `PGSCONFORM_AUTH_TOKEN` as `Authorization: Bearer` to the server under test, so it can check a `cmd/pgserverless` started with `PGSERVERLESS_AUTH_TOKEN`. The refusing server never receives it.
-
 ## 0.9.6
 
 ### Patch Changes
