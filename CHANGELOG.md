@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.11.0
+
+### Minor Changes
+
+- 9366f0d: `cmd/pgserverless` now offers a client certificate to a database that requires one: set `sslcert` and `sslkey` in `DATABASE_URL`, as for `psql`. Such a database refused every connection before, on `POST /sql` and on the WebSocket tunnel alike. The server stops at start when only one of the two is set or the pair cannot be loaded. Library hosts set the new `Upstream.ClientCert`.
+- 12e24d6: Every `POST /sql` response, the `OPTIONS /sql` preflight and the WebSocket upgrade now carry a `Neon-Request-Id` header with a fresh UUID, as Neon's proxy sends on every response, errors and admission refusals included. The warnings logged for that request (`connect failed`, the WebSocket upgrade, startup and dial failures) carry the same id as `request_id`, so a client can quote the id and an operator can find the matching log line.
+- 5df634c: `cmd/pgserverless` serves HTTPS and WSS itself when `PGSERVERLESS_TLS_CERT` and `PGSERVERLESS_TLS_KEY` name a PEM certificate and key, so the driver's defaults (`https://` fetch, `useSecureWebSocket = true`) work against it without a proxy in front. The server stops at start when only one is set or the pair cannot be loaded. Unset, it serves plain HTTP as before, and the token and remote listener rules are unchanged.
+
+### Patch Changes
+
+- cebaed1: The response cap set by `WithMaxResponseBytes` or `WithHTTPMaxResponseBytes`, which `cmd/pgserverless` sets to 10 MiB, now counts the response's JSON as Neon's proxy does and refuses with 507 only when a row arrives after the cap is passed. It used to count each row's DataRow bytes, binary ones in native mode, so a driver query of a million one-character rows was refused where Neon answers it, and an object-mode response with long column names could grow well past the cap.
+- 2841700: Native mode spells an empty `varbit` as `""`, as Neon's proxy returns it. `SELECT ''::varbit` used to answer `{"Bytes":"","Len":0,"Valid":true}`, and an empty element of a `varbit[]` the same struct.
+- 3e16cb8: `POST /sql` takes `Neon-Batch-Isolation-Level` only as `ReadUncommitted`, `ReadCommitted`, `RepeatableRead` or `Serializable`, spelled exactly, and refuses any other value of the header, an empty one included, with 400 `invalid isolation level` before dialing, as Neon's proxy does. Spellings such as `read committed` or `SERIALIZABLE` used to run, and an empty header ran at the server default, so a client that worked here could fail on Neon.
+- 907c0f6: `POST /sql` answers 400 to a body or batch item whose `params` is `null`, as Neon's proxy does, instead of running it with no parameters. Neon reads `params` into a list and defaults it only when it is absent. A body that also carries `queries` still runs as a batch. SPEC 0.11.0 states it in sections 4.2 and 4.3 and the corpus pins it at levels 1 and 3.
+- 67ec3c0: SPEC.md 0.12.0 requires the batch isolation level header to be `ReadUncommitted`, `ReadCommitted`, `RepeatableRead` or `Serializable`, spelled exactly, and any other value, an empty one included, to be refused with 400, as Neon's proxy refuses it. The corpus gains `batch/lower-case-isolation-level-is-refused` and `batch/empty-isolation-level-is-refused`.
+- 80424c8: `POST /sql` answers 400 `upstream connection lost` when the database connection closes in the middle of a statement without an error, as a crashed or killed backend does, instead of 500 `internal server error`. SPEC 7.2 asks for 400 there and Neon's proxy answers any error of its PostgreSQL client with 400; the driver reads the body only on a 400. A dial that fails the same way still answers 500. `pgfake.Result.Disconnect` closes the session after its rows, to test it.
+
 ## 0.10.3
 
 ### Patch Changes
