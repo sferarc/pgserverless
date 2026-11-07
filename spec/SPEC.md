@@ -1,6 +1,6 @@
 # The Postgres serverless HTTP and WebSocket protocol
 
-Version 0.11.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 0.12.0, draft. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 This document specifies how a server exposes a PostgreSQL database over HTTP and over WebSocket to a serverless client. It is written so that a second implementation, in any language, can be built from this document alone and checked against the conformance corpus described in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -344,7 +344,7 @@ BEGIN [ISOLATION LEVEL <level>] [READ ONLY] [DEFERRABLE]
 
 The characteristics MUST be applied by PostgreSQL rather than emulated, so that a read-only batch rejects a write with SQLSTATE 25006. Any statement failing aborts the transaction, so partial effects MUST NOT persist.
 
-Isolation level values arrive in the client's camelCase spelling and map to the SQL spelling. A server MUST reject an unrecognized level with 400 rather than silently dropping it: the caller asked the server to enforce a guarantee.
+Isolation level values arrive in the client's camelCase spelling and map to the SQL spelling. A server MUST accept exactly the four names `ReadUncommitted`, `ReadCommitted`, `RepeatableRead` and `Serializable`, matched with their case, and MUST refuse any other value of a present header with 400 rather than silently dropping it: the caller asked the server to enforce a guarantee. Another spelling of a known level, such as `serializable` or `read committed`, and an empty value are other values, as they are to Neon's proxy.
 
 The boolean headers MUST accept the spellings a standard boolean parser accepts (`true`, `True`, `1`), and MUST reject anything else with 400 for the same reason. Defaulting an unparseable value to false is the one wrong answer available, because false means read-write.
 

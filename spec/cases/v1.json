@@ -1,5 +1,5 @@
 {
-  "spec_version": "0.11.0",
+  "spec_version": "0.12.0",
   "version": 2,
   "about": "Slice of the Postgres serverless protocol conformance corpus: the core, batch and WebSocket families, the parameter encoding of SPEC.md section 4.4 and the level 2 value coercion families of SPEC.md section 6. Cases marked parses_equal pin spellings SPEC.md Appendix B leaves undecided. See CONFORMANCE.md section 7 for what is still missing.",
   "fixtures": [
@@ -4675,6 +4675,56 @@
           "array_mode": true,
           "raw_text": true,
           "batch_isolation_level": "Snapshot"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT 1"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {}
+      }
+    },
+    {
+      "id": "batch/lower-case-isolation-level-is-refused",
+      "level": 3,
+      "spec": "8",
+      "note": "The client spells the level Serializable, and Neon's proxy refuses any other spelling. A server that reads this as SERIALIZABLE runs a batch Neon refuses.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_isolation_level": "serializable"
+        },
+        "body": {
+          "queries": [
+            {
+              "query": "SELECT 1"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 400,
+        "error": {}
+      }
+    },
+    {
+      "id": "batch/empty-isolation-level-is-refused",
+      "level": 3,
+      "spec": "8",
+      "note": "A present header with no value names no level. Neon's proxy refuses it rather than running the batch at the default level.",
+      "request": {
+        "path": "/sql",
+        "headers": {
+          "array_mode": true,
+          "raw_text": true,
+          "batch_isolation_level": ""
         },
         "body": {
           "queries": [
