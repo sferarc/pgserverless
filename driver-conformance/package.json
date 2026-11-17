@@ -17,13 +17,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@neondatabase/serverless": "1.2.0",
+    "@neondatabase/serverless": "1.2.1",
     "@prisma/adapter-neon": "7.10.1",
     "drizzle-orm": "0.45.4",
-    "kysely": "0.29.8",
+    "kysely": "0.29.9",
     "kysely-neon": "3.0.0",
     "waddler": "0.1.1",
-    "ws": "8.22.1"
+    "ws": "8.23.0"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

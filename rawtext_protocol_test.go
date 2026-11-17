@@ -231,7 +231,7 @@ func TestConformance_Governed_BatchItemEndingInLineComment(t *testing.T) {
 	require.Len(t, batch.Results, 2)
 	assert.Equal(t, []any{"1"}, batch.Results[0].Rows[0])
 	assert.Equal(t, []any{"2"}, batch.Results[1].Rows[0])
-	assert.Equal(t, []string{"SELECT 1 AS a -- first\n;\nSELECT 2 AS b"}, pg.SimpleSQL())
+	assert.Equal(t, []string{"SELECT 1 AS a -- first\n\n;\nSELECT 2 AS b"}, pg.SimpleSQL())
 }
 
 // A governed batch item holding two statements is refused before anything is
@@ -305,7 +305,7 @@ func TestConformance_Governed_BatchReadOnlyRejectsWrite(t *testing.T) {
 	resp := decodeError(t, rec)
 	require.NotNil(t, resp.Code)
 	assert.Equal(t, "25006", *resp.Code)
-	assert.Equal(t, []string{"BEGIN READ ONLY;\nINSERT INTO orders (id) VALUES (1)\n;COMMIT"}, pg.SimpleSQL())
+	assert.Equal(t, []string{"BEGIN READ ONLY\n;\nINSERT INTO orders (id) VALUES (1)\n\n;COMMIT"}, pg.SimpleSQL())
 }
 
 // A one-item governed batch is sent exactly as it was before the separator
